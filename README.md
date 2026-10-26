@@ -1,9 +1,9 @@
 | Branch | __FreeBSD_version | Last commit |
 |---|---:|---|
-| [freebsd/15-stable/main](../../tree/freebsd/15-stable/main) | 1501504 | 25.10.26 18:27 |
+| [freebsd/15-stable/main](../../tree/freebsd/15-stable/main) | 1501504 | 26.10.26 01:23 |
 | [freebsd/current/main](../../tree/freebsd/current/main) | 1600029 | 25.10.26 19:33 |
-| [hardened/15-stable/main](../../tree/hardened/15-stable/main) | 1501504 | 25.10.26 18:00 |
-| [hardened/15-stable/pledge](../../tree/hardened/15-stable/pledge) | 1501504 | 25.10.26 18:01 |
+| [hardened/15-stable/main](../../tree/hardened/15-stable/main) | 1501504 | 26.10.26 00:01 |
+| [hardened/15-stable/pledge](../../tree/hardened/15-stable/pledge) | 1501504 | 26.10.26 00:01 |
 | [hardened/current/cross-dso-cfi](../../tree/hardened/current/cross-dso-cfi) | 1600026 | 01.10.26 00:01 |
 | [hardened/current/master](../../tree/hardened/current/master) | 1600029 | 25.10.26 18:01 |
 | [hardened/current/pledge](../../tree/hardened/current/pledge) | 1600029 | 25.10.26 18:01 |
