@@ -469,8 +469,10 @@ static void	em_finish_fatal_error_reset(struct e1000_softc *);
 static void	em_configure_peind_memory_errors(struct e1000_softc *);
 static void	em_configure_82575_memory_errors(struct e1000_softc *);
 static void	em_configure_82580_memory_errors(struct e1000_softc *);
+static void	em_configure_dh89xxcc_memory_errors(struct e1000_softc *);
 static void	em_update_82580_ecc_stats(struct e1000_softc *, u32, u32,
 		    u32);
+static void	em_update_dh89xxcc_ecc_stats(struct e1000_softc *);
 static void	em_if_multi_set(if_ctx_t);
 static void	em_if_update_admin_status(if_ctx_t);
 static void	em_if_debug(if_ctx_t);
@@ -544,6 +546,7 @@ static void	em_handle_link(void *);
 
 static void	em_enable_vectors_82574(if_ctx_t);
 
+static void	em_sysctl_request_reinit(struct e1000_softc *);
 static int	em_set_flowcntl(SYSCTL_HANDLER_ARGS);
 static int	em_sysctl_eee(SYSCTL_HANDLER_ARGS);
 static int	igb_sysctl_dmac(SYSCTL_HANDLER_ARGS);
@@ -1223,6 +1226,7 @@ em_add_device_sysctls(struct e1000_softc *sc)
 	    CTLTYPE_STRING | CTLFLAG_RD, sc, 0,
 	    em_sysctl_print_fw_version, "A",
 	    "Prints FW/NVM Versions");
+	sc->fc = e1000_fc_full;
 	SYSCTL_ADD_PROC(ctx_list, child, OID_AUTO, "fc",
 	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, sc, 0,
 	    em_set_flowcntl, "I", "Flow Control");
@@ -2094,6 +2098,7 @@ em_if_init(if_ctx_t ctx)
 	em_configure_peind_memory_errors(sc);
 	em_configure_82575_memory_errors(sc);
 	em_configure_82580_memory_errors(sc);
+	em_configure_dh89xxcc_memory_errors(sc);
 	if (sc->vf_ifp) {
 		sc->vf_reset_pending = false;
 	} else {
@@ -2381,18 +2386,36 @@ em_configure_82576_memory_errors(struct e1000_softc *sc)
 }
 
 static bool
+em_has_dh89xxcc_memory_errors(const struct e1000_hw *hw)
+{
+
+	if (hw->mac.type != e1000_82580)
+		return (false);
+	switch (hw->device_id) {
+	case E1000_DEV_ID_DH89XXCC_SGMII:
+	case E1000_DEV_ID_DH89XXCC_SERDES:
+	case E1000_DEV_ID_DH89XXCC_BACKPLANE:
+	case E1000_DEV_ID_DH89XXCC_SFP:
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+static bool
 em_has_82580_memory_errors(const struct e1000_hw *hw)
 {
 
-	return (hw->mac.type == e1000_82580);
+	return (hw->mac.type == e1000_82580 &&
+	    !em_has_dh89xxcc_memory_errors(hw));
 }
 
 static void
-em_clear_82580_memory_error_status(struct e1000_hw *hw, u32 reg)
+em_clear_memory_error_status(struct e1000_hw *hw, u32 reg, u32 mask)
 {
 	u32 status;
 
-	status = E1000_READ_REG(hw, reg);
+	status = E1000_READ_REG(hw, reg) & mask;
 	if (status != 0)
 		E1000_WRITE_REG(hw, reg, status);
 }
@@ -2409,10 +2432,10 @@ em_configure_82580_memory_errors(struct e1000_softc *sc)
 
 	/* Clear status left before the driver completed its memory tables. */
 	(void)E1000_READ_REG(hw, E1000_PEIND);
-	em_clear_82580_memory_error_status(hw, E1000_DTPARS_82580);
-	em_clear_82580_memory_error_status(hw, E1000_DRPARS_82580);
-	em_clear_82580_memory_error_status(hw, E1000_DDPARS_82580);
-	em_clear_82580_memory_error_status(hw, E1000_PCIEERRSTS);
+	em_clear_memory_error_status(hw, E1000_DTPARS_82580, ~0U);
+	em_clear_memory_error_status(hw, E1000_DRPARS_82580, ~0U);
+	em_clear_memory_error_status(hw, E1000_DDPARS_82580, ~0U);
+	em_clear_memory_error_status(hw, E1000_PCIEERRSTS, ~0U);
 	(void)E1000_READ_REG(hw, E1000_LANPERRSTS);
 	em_update_82580_ecc_stats(sc,
 	    E1000_READ_REG(hw, E1000_RPBECCSTS),
@@ -2447,6 +2470,43 @@ em_configure_82580_memory_errors(struct e1000_softc *sc)
 	reg = E1000_READ_REG(hw, E1000_PEINDM);
 	E1000_WRITE_REG(hw, E1000_PEINDM,
 	    reg | E1000_PEIND_FATAL_MASK);
+	E1000_WRITE_FLUSH(hw);
+}
+
+static void
+em_clear_dh89xxcc_parity_status(struct e1000_hw *hw)
+{
+
+	em_clear_memory_error_status(hw, E1000_DTPARS_82580,
+	    E1000_DTPARS_DH89XXCC_ERROR_MASK);
+	em_clear_memory_error_status(hw, E1000_DRPARS_82580,
+	    E1000_DRPARS_DH89XXCC_ERROR_MASK);
+	em_clear_memory_error_status(hw, E1000_DDPARS_82580,
+	    E1000_DDPARS_DH89XXCC_ERROR_MASK);
+}
+
+static void
+em_configure_dh89xxcc_memory_errors(struct e1000_softc *sc)
+{
+	struct e1000_hw *hw;
+
+	hw = &sc->hw;
+	if (!em_has_dh89xxcc_memory_errors(hw))
+		return;
+
+	/*
+	 * Intel 89xx datasheet, section 28.22: the DMA parity status layout
+	 * matches 82580, but its parity controls, receive-buffer ECC and PCIe
+	 * error registers are reserved.  LANPERRCTL only controls management
+	 * flex filters whose memories are not initialized by this driver.
+	 */
+	em_clear_dh89xxcc_parity_status(hw);
+	(void)E1000_READ_REG(hw, E1000_PEIND);
+	em_update_dh89xxcc_ecc_stats(sc);
+	E1000_WRITE_REG(hw, E1000_TPBECCSTS,
+	    E1000_TPBECCSTS_DH89XXCC_ECC_ENABLE);
+	/* All other PEINDM bits are reserved; do not preserve read values. */
+	E1000_WRITE_REG(hw, E1000_PEINDM, E1000_PEIND_FATAL_MASK);
 	E1000_WRITE_FLUSH(hw);
 }
 
@@ -2491,6 +2551,7 @@ em_has_peind_memory_errors(const struct e1000_hw *hw)
 {
 
 	return (em_has_82580_memory_errors(hw) ||
+	    em_has_dh89xxcc_memory_errors(hw) ||
 	    em_has_i350_i354_memory_errors(hw) ||
 	    em_has_i210_memory_errors(hw));
 }
@@ -2559,6 +2620,15 @@ em_update_82580_ecc_stats(struct e1000_softc *sc, u32 rpbeccsts,
 	sc->uncorrected_error_pcie_count += bitcount32(status);
 	if (status != 0)
 		E1000_WRITE_REG(&sc->hw, E1000_PCIEECCSTS, status);
+}
+
+static void
+em_update_dh89xxcc_ecc_stats(struct e1000_softc *sc)
+{
+
+	sc->corrected_error_packet_buffer_count +=
+	    E1000_READ_REG(&sc->hw, E1000_TPBECCSTS) &
+	    E1000_TPBECCSTS_DH89XXCC_CORR_CNT_MASK;
 }
 
 static void
@@ -2786,6 +2856,27 @@ em_handle_fatal_error_intr(struct e1000_softc *sc, u32 icr)
 		    E1000_READ_REG(hw, E1000_TDHESTS_82575);
 	} else if (em_has_82576_memory_errors(hw)) {
 		sc->fatal_error_peind = E1000_READ_REG(hw, E1000_PEIND);
+	} else if (em_has_dh89xxcc_memory_errors(hw)) {
+		/* PCIe and management errors have no subordinate status CSR. */
+		peind = E1000_READ_REG(hw, E1000_PEIND) &
+		    E1000_PEIND_FATAL_MASK;
+		dma_tx = E1000_READ_REG(hw, E1000_DTPARS_82580) &
+		    E1000_DTPARS_DH89XXCC_ERROR_MASK;
+		dma_rx = E1000_READ_REG(hw, E1000_DRPARS_82580) &
+		    E1000_DRPARS_DH89XXCC_ERROR_MASK;
+		dma_host = E1000_READ_REG(hw, E1000_DDPARS_82580) &
+		    E1000_DDPARS_DH89XXCC_ERROR_MASK;
+		lanerr = E1000_READ_REG(hw, E1000_LANPERRSTS) &
+		    E1000_LANPERRSTS_DH89XXCC_ERROR_MASK;
+		if (dma_tx != 0 || dma_rx != 0 || dma_host != 0)
+			peind |= E1000_PEIND_DMA_PARITY_FATAL;
+		if (lanerr != 0)
+			peind |= E1000_PEIND_LANPORT_PARITY_FATAL;
+		sc->fatal_error_peind = peind;
+		sc->fatal_error_dma_tx = dma_tx;
+		sc->fatal_error_dma_rx = dma_rx;
+		sc->fatal_error_dma_host = dma_host;
+		sc->fatal_error_lan = lanerr;
 	} else {
 		peind = E1000_READ_REG(hw, E1000_PEIND) &
 		    E1000_PEIND_FATAL_MASK;
@@ -2904,7 +2995,9 @@ em_handle_fatal_error_admin(struct e1000_softc *sc)
 			    E1000_READ_REG(&sc->hw, E1000_RPBECCSTS),
 			    E1000_READ_REG(&sc->hw, E1000_TPBECCSTS),
 			    pcieecc);
-		} else if (em_has_i350_i354_memory_errors(&sc->hw))
+		} else if (em_has_dh89xxcc_memory_errors(&sc->hw))
+			em_update_dh89xxcc_ecc_stats(sc);
+		else if (em_has_i350_i354_memory_errors(&sc->hw))
 			em_update_i350_i354_ecc_stats(sc);
 		if (peind & E1000_PEIND_LANPORT_PARITY_FATAL)
 			sc->fatal_error_lan_count++;
@@ -2924,6 +3017,15 @@ em_handle_fatal_error_admin(struct e1000_softc *sc)
 			    "LANPERRSTS %#x\n", peind,
 			    sc->fatal_error_pcie,
 			    sc->fatal_error_pcie_ecc,
+			    sc->fatal_error_dma_tx,
+			    sc->fatal_error_dma_rx,
+			    sc->fatal_error_dma_host,
+			    sc->fatal_error_lan);
+		} else if (em_has_dh89xxcc_memory_errors(&sc->hw)) {
+			device_printf(sc->dev,
+			    "fatal internal memory error: PEIND %#x, "
+			    "DTPARS %#x, DRPARS %#x, DDPARS %#x, "
+			    "LANPERRSTS %#x\n", peind,
 			    sc->fatal_error_dma_tx,
 			    sc->fatal_error_dma_rx,
 			    sc->fatal_error_dma_host,
@@ -3184,6 +3286,8 @@ igb_finish_device_reset(struct e1000_softc *sc, u32 icr)
  * 82580 stops PCIe traffic for a fatal error in any host-owned region, so use
  * the same order for every 82580 recovery.  This differs from the normal
  * reset path, which disables the bus master first.
+ * DH89xxCC uses the same port-reset sequence without the 82580 PCIe status
+ * registers.  Like 82580, it has no STATUS.RST_DONE bit.
  *
  * Indications that relatch after admin accounting are discarded during
  * reset; sticky bits cannot distinguish them from the saved event.
@@ -3201,11 +3305,13 @@ em_prepare_fatal_error_reset(struct e1000_softc *sc)
 	    EM_FATAL_ERROR_RESET_REQUESTED)
 		return;
 
-	pcieerr = sc->fatal_error_pcie |
-	    (E1000_READ_REG(&sc->hw, E1000_PCIEERRSTS) &
-	    em_pcie_fatal_error_mask(&sc->hw));
+	pcieerr = sc->fatal_error_pcie;
+	if (!em_has_dh89xxcc_memory_errors(&sc->hw))
+		pcieerr |= E1000_READ_REG(&sc->hw, E1000_PCIEERRSTS) &
+		    em_pcie_fatal_error_mask(&sc->hw);
 	pcieecc = sc->fatal_error_pcie_ecc;
 	if (!em_has_82580_memory_errors(&sc->hw) &&
+	    !em_has_dh89xxcc_memory_errors(&sc->hw) &&
 	    (sc->fatal_error_peind & E1000_PEIND_PCIE_PARITY_FATAL) == 0 &&
 	    pcieerr == 0)
 		return;
@@ -3218,7 +3324,7 @@ em_prepare_fatal_error_reset(struct e1000_softc *sc)
 	for (i = 0; i < AUTO_READ_DONE_TIMEOUT; i++) {
 		if ((E1000_READ_REG(hw, E1000_EECD) &
 		    E1000_EECD_AUTO_RD) != 0 &&
-		    (em_has_82580_memory_errors(hw) ||
+		    (hw->mac.type == e1000_82580 ||
 		    (E1000_READ_REG(hw, E1000_STATUS) &
 		    E1000_STATUS_RST_DONE) != 0))
 			break;
@@ -3232,10 +3338,12 @@ em_prepare_fatal_error_reset(struct e1000_softc *sc)
 		device_printf(sc->dev,
 		    "PCIe master disable failed during parity recovery: %d\n",
 		    error);
-	pcieerr |= E1000_READ_REG(hw, E1000_PCIEERRSTS) &
-	    em_pcie_fatal_error_mask(hw);
-	if (pcieerr != 0)
-		E1000_WRITE_REG(hw, E1000_PCIEERRSTS, pcieerr);
+	if (!em_has_dh89xxcc_memory_errors(hw)) {
+		pcieerr |= E1000_READ_REG(hw, E1000_PCIEERRSTS) &
+		    em_pcie_fatal_error_mask(hw);
+		if (pcieerr != 0)
+			E1000_WRITE_REG(hw, E1000_PCIEERRSTS, pcieerr);
+	}
 	if (em_has_82580_memory_errors(hw)) {
 		pcieecc |= E1000_READ_REG(hw, E1000_PCIEECCSTS) &
 		    E1000_PCIEECCSTS_82580_ERROR_MASK;
@@ -3299,6 +3407,21 @@ em_finish_fatal_error_reset(struct e1000_softc *sc)
 		sc->fatal_error_peind = 0;
 		sc->fatal_error_pcie = 0;
 		sc->fatal_error_pcie_ecc = 0;
+		sc->fatal_error_lan = 0;
+		sc->fatal_error_dma_tx = 0;
+		sc->fatal_error_dma_rx = 0;
+		sc->fatal_error_dma_host = 0;
+	} else if (em_has_dh89xxcc_memory_errors(hw)) {
+		em_clear_dh89xxcc_parity_status(hw);
+		/* LANPERRSTS is read-only and is cleared by the port reset. */
+		lanerr = E1000_READ_REG(hw, E1000_LANPERRSTS) &
+		    E1000_LANPERRSTS_DH89XXCC_ERROR_MASK;
+		if (lanerr != 0)
+			device_printf(sc->dev,
+			    "LAN parity status remained set after reset: %#x\n",
+			    lanerr);
+		(void)E1000_READ_REG(hw, E1000_PEIND);
+		sc->fatal_error_peind = 0;
 		sc->fatal_error_lan = 0;
 		sc->fatal_error_dma_tx = 0;
 		sc->fatal_error_dma_rx = 0;
@@ -5095,10 +5218,7 @@ em_reset(if_ctx_t ctx)
 	    roundup2(hw->mac.max_frame_size, 1024);
 	hw->fc.low_water = hw->fc.high_water - 1500;
 
-	if (sc->fc) /* locally set flow control value? */
-		hw->fc.requested_mode = sc->fc;
-	else
-		hw->fc.requested_mode = e1000_fc_full;
+	hw->fc.requested_mode = sc->fc;
 
 	if (hw->mac.type == e1000_80003es2lan)
 		hw->fc.pause_time = 0xFFFF;
@@ -5111,7 +5231,10 @@ em_reset(if_ctx_t ctx)
 	switch (hw->mac.type) {
 	case e1000_pchlan:
 		/* Workaround: no TX flow ctrl for PCH */
-		hw->fc.requested_mode = e1000_fc_rx_pause;
+		if (hw->fc.requested_mode == e1000_fc_full)
+			hw->fc.requested_mode = e1000_fc_rx_pause;
+		else if (hw->fc.requested_mode == e1000_fc_tx_pause)
+			hw->fc.requested_mode = e1000_fc_none;
 		hw->fc.pause_time = 0xFFFF; /* override */
 		if (if_getmtu(ifp) > ETHERMTU) {
 			hw->fc.high_water = 0x3500;
@@ -5225,6 +5348,7 @@ em_initialize_rss_mapping(struct e1000_softc *sc)
 {
 	uint8_t rss_key[4 * RSSKEYLEN];
 	uint32_t reta = 0;
+	uint32_t rss_hash_config, mrqc;
 	struct e1000_hw *hw = &sc->hw;
 	int i;
 
@@ -5255,12 +5379,22 @@ em_initialize_rss_mapping(struct e1000_softc *sc)
 	for (i = 0; i < 32; ++i)
 		E1000_WRITE_REG(hw, E1000_RETA(i), reta);
 
-	E1000_WRITE_REG(hw, E1000_MRQC, E1000_MRQC_RSS_ENABLE_2Q |
-			E1000_MRQC_RSS_FIELD_IPV4_TCP |
-			E1000_MRQC_RSS_FIELD_IPV4 |
-			E1000_MRQC_RSS_FIELD_IPV6_TCP_EX |
-			E1000_MRQC_RSS_FIELD_IPV6_EX |
-			E1000_MRQC_RSS_FIELD_IPV6);
+	/* Configure the hash fields supported by the 82574. */
+	rss_hash_config = rss_gethashconfig();
+	mrqc = E1000_MRQC_RSS_ENABLE_2Q;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV4)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV4;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_TCP_IPV4)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV4_TCP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV6)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV6_EX)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6_EX;
+	/* On 82574, bit 18 selects TCP/IPv6; bit 21 is reserved. */
+	if (rss_hash_config & RSS_HASHTYPE_RSS_TCP_IPV6)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6_TCP_EX;
+
+	E1000_WRITE_REG(hw, E1000_MRQC, mrqc);
 }
 
 static void
@@ -5271,6 +5405,7 @@ igb_initialize_rss_mapping(struct e1000_softc *sc)
 	int queue_id;
 	u32 reta;
 	u32 rss_key[10], mrqc, shift = 0;
+	u32 rss_hash_config;
 
 	/* XXX? */
 	if (hw->mac.type == e1000_82575)
@@ -5340,16 +5475,28 @@ igb_initialize_rss_mapping(struct e1000_softc *sc)
 		E1000_WRITE_REG_ARRAY(hw, E1000_RSSRK(0), i, rss_key[i]);
 
 	/*
-	 * Configure the RSS fields to hash upon.
+	 * Match the stack's hash fields, including its UDP 4-tuple policy,
+	 * even when the kernel is built without options RSS.
 	 */
-	mrqc |= (E1000_MRQC_RSS_FIELD_IPV4 |
-	    E1000_MRQC_RSS_FIELD_IPV4_TCP);
-	mrqc |= (E1000_MRQC_RSS_FIELD_IPV6 |
-	    E1000_MRQC_RSS_FIELD_IPV6_TCP);
-	mrqc |=( E1000_MRQC_RSS_FIELD_IPV4_UDP |
-	    E1000_MRQC_RSS_FIELD_IPV6_UDP);
-	mrqc |=( E1000_MRQC_RSS_FIELD_IPV6_UDP_EX |
-	    E1000_MRQC_RSS_FIELD_IPV6_TCP_EX);
+	rss_hash_config = rss_gethashconfig();
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV4)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV4;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_TCP_IPV4)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV4_TCP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV6)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_TCP_IPV6)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6_TCP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV6_EX)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6_EX;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_TCP_IPV6_EX)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6_TCP_EX;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_UDP_IPV4)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV4_UDP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_UDP_IPV6)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6_UDP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_UDP_IPV6_EX)
+		mrqc |= E1000_MRQC_RSS_FIELD_IPV6_UDP_EX;
 
 	E1000_WRITE_REG(hw, E1000_MRQC, mrqc);
 }
@@ -7439,6 +7586,8 @@ em_update_stats_counters(struct e1000_softc *sc)
 		    E1000_READ_REG(&sc->hw, E1000_RPBECCSTS),
 		    E1000_READ_REG(&sc->hw, E1000_TPBECCSTS),
 		    E1000_READ_REG(&sc->hw, E1000_PCIEECCSTS));
+	else if (em_has_dh89xxcc_memory_errors(&sc->hw))
+		em_update_dh89xxcc_ecc_stats(sc);
 	else if (em_has_i350_i354_memory_errors(&sc->hw))
 		em_update_i350_i354_ecc_stats(sc);
 	else if (em_has_i210_memory_errors(&sc->hw))
@@ -8006,6 +8155,11 @@ em_add_hw_stats(struct e1000_softc *sc)
 				    "uncorrected_pcie", CTLFLAG_RD,
 				    &sc->uncorrected_error_pcie_count,
 				    "Uncorrected PCIe command-memory ECC indications");
+			} else if (em_has_dh89xxcc_memory_errors(&sc->hw)) {
+				SYSCTL_ADD_UQUAD(ctx, memerr_list, OID_AUTO,
+				    "corrected_packet_buffer", CTLFLAG_RD,
+				    &sc->corrected_error_packet_buffer_count,
+				    "Corrected transmit packet-buffer ECC errors");
 			} else if (em_has_i210_memory_errors(&sc->hw)) {
 				SYSCTL_ADD_UQUAD(ctx, memerr_list, OID_AUTO,
 				    "corrected_dma", CTLFLAG_RD,
@@ -8533,16 +8687,13 @@ em_add_int_delay_sysctl(struct e1000_softc *sc, const char *name,
 static int
 em_set_flowcntl(SYSCTL_HANDLER_ARGS)
 {
-	int error;
-	static int input = 3; /* default is full */
+	int error, input;
 	struct e1000_softc *sc = (struct e1000_softc *) arg1;
 
+	input = sc->fc;
 	error = sysctl_handle_int(oidp, &input, 0, req);
 
 	if ((error) || (req->newptr == NULL))
-		return (error);
-
-	if (input == sc->fc) /* no change? */
 		return (error);
 
 	switch (input) {
@@ -8550,17 +8701,21 @@ em_set_flowcntl(SYSCTL_HANDLER_ARGS)
 	case e1000_fc_tx_pause:
 	case e1000_fc_full:
 	case e1000_fc_none:
-		sc->hw.fc.requested_mode = input;
-		sc->fc = input;
 		break;
 	default:
-		/* Do nothing */
-		return (error);
+		return (EINVAL);
 	}
 
-	sc->hw.fc.current_mode = sc->hw.fc.requested_mode;
-	e1000_force_mac_fc(&sc->hw);
-	return (error);
+	if (input == sc->fc) /* no change? */
+		return (0);
+
+	/*
+	 * The mode is advertised to the link partner and also decides the
+	 * pause thresholds and per-queue drop, so it takes a reinit to apply.
+	 */
+	sc->fc = input;
+	em_sysctl_request_reinit(sc);
+	return (0);
 }
 
 static void

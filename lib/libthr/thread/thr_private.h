@@ -155,6 +155,12 @@ TAILQ_HEAD(mutex_queue, pthread_mutex);
 #define MAX_DEFER_WAITERS       50
 
 /*
+ * For adaptive mutexes, how many times to spin doing trylock2
+ * before entering the kernel to block
+ */
+#define MUTEX_ADAPTIVE_SPINS	2000
+
+/*
  * Values for pthread_mutex m_ps indicator.
  */
 #define	PMUTEX_INITSTAGE_ALLOC	0
@@ -172,13 +178,17 @@ struct pthread_mutex {
 	int				m_yieldloops;
 	int				m_ps;	/* pshared init stage */
 	/*
+	 * Deliberately put m_qe and m_lock into different cache line to prevent
+	 * false sharing.
+	 */
+	struct pthread_mutex		*m_rb_prev;
+	/*
 	 * Link for all mutexes a thread currently owns, of the same
 	 * prio type.
 	 */
 	TAILQ_ENTRY(pthread_mutex)	m_qe;
 	/* Link for all private mutexes a thread currently owns. */
 	TAILQ_ENTRY(pthread_mutex)	m_pqe;
-	struct pthread_mutex		*m_rb_prev;
 };
 
 struct pthread_mutex_attr {
@@ -239,7 +249,9 @@ struct pthread_cleanup {
 };
 
 #define	THR_CLEANUP_PUSH(td, func, arg) {		\
-	struct pthread_cleanup __cup;			\
+	struct pthread_cleanup __cup			\
+	    __attribute__((__cleanup__(			\
+	    _thr_cleanup_unwind)));			\
 							\
 	__cup.routine = func;				\
 	__cup.routine_arg = arg;			\
@@ -511,6 +523,10 @@ struct pthread {
 
 	/* Number rwlocks rdlocks held. */
 	int			rdlock_count;
+
+	void			*pshared_key;
+	void			*pshared_val;
+	unsigned long		pshared_gen;
 
 	/*
 	 * Current locks bitmap for rtld. */
@@ -931,8 +947,20 @@ _thr_is_inited(void)
 static inline void
 _thr_check_init(void)
 {
-	if (_thr_initial == NULL)
+	if (__predict_false(_thr_initial == NULL))
 		_libpthread_init(NULL);
+}
+
+static inline void
+_thr_cleanup_unwind(struct pthread_cleanup *cup)
+{
+	struct pthread *curthread;
+
+	curthread = _get_curthread();
+	if (curthread->cleanup == cup) {
+		curthread->cleanup = cup->prev;
+		cup->routine(cup->routine_arg);
+	}
 }
 
 struct wake_addr *_thr_alloc_wake_addr(void);
@@ -966,6 +994,34 @@ static inline struct pthread *
 _sleepq_first(struct sleepqueue *sq)
 {
 	return TAILQ_FIRST(&sq->sq_blocked);
+}
+
+/*
+ * Must accept the same clocks as umtx_check_clockid() in
+ * sys/kern/kern_umtx.c.
+ */
+static inline int
+_thr_check_clockid(clockid_t clockid)
+{
+	switch (clockid) {
+	case CLOCK_REALTIME:
+	case CLOCK_REALTIME_PRECISE:
+	case CLOCK_REALTIME_FAST:
+	case CLOCK_MONOTONIC:
+	case CLOCK_MONOTONIC_PRECISE:
+	case CLOCK_MONOTONIC_FAST:
+	case CLOCK_UPTIME:
+	case CLOCK_UPTIME_PRECISE:
+	case CLOCK_UPTIME_FAST:
+	case CLOCK_SECOND:
+	case CLOCK_VIRTUAL:
+	case CLOCK_PROF:
+	case CLOCK_PROCESS_CPUTIME_ID:
+	case CLOCK_TAI:
+		return (0);
+	default:
+		return (EINVAL);
+	}
 }
 
 void	_sleepq_init(void) __hidden;
@@ -1107,6 +1163,8 @@ int _thr_mutex_destroy(pthread_mutex_t *);
 int _thr_mutex_unlock(pthread_mutex_t *);
 int __Tthr_mutex_lock(pthread_mutex_t *);
 int __Tthr_mutex_trylock(pthread_mutex_t *);
+bool __thr_get_main_stack_base(char **);
+bool __thr_get_main_stack_lim(size_t *);
 int _Tthr_sigqueue(pthread_t pthread, int sig, const union sigval value);
 void _thr_resolve_machdep(void);
 

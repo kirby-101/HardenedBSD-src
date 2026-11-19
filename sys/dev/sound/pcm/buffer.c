@@ -90,6 +90,25 @@ sndbuf_rele(struct snd_dbuf *b)
 	}
 }
 
+static bool
+sndbuf_busy(struct snd_dbuf *b)
+{
+	CHN_LOCKASSERT(b->channel);
+
+	return (refcount_load(&b->refcount) > 1 ||
+	    (b->flags & SNDBUF_F_DETACHED) != 0 ||
+	    b->channel->inprog != 0 ||
+	    /*
+	     * XXX-MJ CHN_F_MMAP is not reliable, but for software buffers the
+	     * refcount accurately reflects whether the buffer is mapped.
+	     * Ensure that there is no in-flight DMA transfer by checking
+	     * CHN_F_TRIGGERED.  This should really be checked at a higher
+	     * layer, but this is tricky since chn_resizebuf() and
+	     * sndbuf_resize() drop and reacquire the channel lock.
+	     */
+	    (b->channel->flags & (CHN_F_MMAP | CHN_F_TRIGGERED)) != 0);
+}
+
 static void
 sndbuf_setmap(void *arg, bus_dma_segment_t *segs, int nseg, int error)
 {
@@ -205,8 +224,7 @@ sndbuf_resize(struct snd_dbuf *b, unsigned int blkcnt, unsigned int blksz)
 
 	if (bufsize > b->allocsize ||
 	    bufsize < (b->allocsize >> SNDBUF_CACHE_SHIFT)) {
-		if (refcount_load(&b->refcount) > 1 ||
-		    (b->flags & SNDBUF_F_DETACHED) != 0) {
+		if (sndbuf_busy(b)) {
 			CHN_UNLOCK(b->channel);
 			return (EBUSY);
 		}
@@ -214,6 +232,11 @@ sndbuf_resize(struct snd_dbuf *b, unsigned int blkcnt, unsigned int blksz)
 		CHN_UNLOCK(b->channel);
 		tmpbuf = malloc(allocsize, M_DEVBUF, M_WAITOK);
 		CHN_LOCK(b->channel);
+		if (sndbuf_busy(b)) {
+			CHN_UNLOCK(b->channel);
+			free(tmpbuf, M_DEVBUF);
+			return (EBUSY);
+		}
 		if (snd_verbose > 3)
 			printf("%s(): b=%p %p -> %p [%d -> %d : %d]\n",
 			    __func__, b, b->tmpbuf, tmpbuf,
@@ -250,8 +273,7 @@ sndbuf_remalloc(struct snd_dbuf *b, unsigned int blkcnt, unsigned int blksz)
 
 	if (bufsize > b->allocsize ||
 	    bufsize < (b->allocsize >> SNDBUF_CACHE_SHIFT)) {
-		if (refcount_load(&b->refcount) > 1 ||
-		    (b->flags & SNDBUF_F_DETACHED) != 0)
+		if (sndbuf_busy(b))
 			return (EBUSY);
 		allocsize = round_page(bufsize);
 		CHN_UNLOCK(b->channel);
@@ -259,6 +281,12 @@ sndbuf_remalloc(struct snd_dbuf *b, unsigned int blkcnt, unsigned int blksz)
 		tmpbuf = malloc(allocsize, M_DEVBUF, M_WAITOK);
 		shadbuf = malloc(allocsize, M_DEVBUF, M_WAITOK);
 		CHN_LOCK(b->channel);
+		if (sndbuf_busy(b)) {
+			free(buf, M_DEVBUF);
+			free(tmpbuf, M_DEVBUF);
+			free(shadbuf, M_DEVBUF);
+			return (EBUSY);
+		}
 		free(b->buf, M_DEVBUF);
 		b->buf = buf;
 		free(b->tmpbuf, M_DEVBUF);
@@ -509,7 +537,7 @@ sndbuf_acquire(struct snd_dbuf *b, uint8_t *from, unsigned int count)
  * @brief Dispose samples from channel buffer, increasing size of ready area
  *
  * This function discards samples from the supplied buffer by advancing the
- * ready area start pointer and decrementing the ready area length.  If 
+ * ready area start pointer and decrementing the ready area length.  If
  * @c to is not NULL, then the discard samples will be copied to the location
  * it points to.
  *
@@ -583,31 +611,3 @@ sndbuf_clearshadow(struct snd_dbuf *b)
 	if ((b->shadbuf != NULL) && (b->sl > 0))
 		memset(b->shadbuf, sndbuf_zerodata(b->fmt), b->sl);
 }
-
-#ifdef OSSV4_EXPERIMENT
-/**
- * @brief Return peak value from samples in buffer ready area.
- *
- * Peak ranges from 0-32767.  If channel is monaural, most significant 16
- * bits will be zero.  For now, only expects to work with 1-2 channel
- * buffers.
- *
- * @note  Currently only operates with linear PCM formats.
- *
- * @param b buffer to analyze
- * @param lpeak pointer to store left peak value
- * @param rpeak pointer to store right peak value
- */
-void
-sndbuf_getpeaks(struct snd_dbuf *b, int *lp, int *rp)
-{
-	uint32_t lpeak, rpeak;
-
-	lpeak = 0;
-	rpeak = 0;
-
-	/**
-	 * @todo fill this in later
-	 */
-}
-#endif

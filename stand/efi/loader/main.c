@@ -85,6 +85,7 @@ struct arch_switch archsw = {	/* MI/MD interface boundary */
 	.arch_getdev = efi_getdev,
 	.arch_copyin = efi_copyin,
 	.arch_copyout = efi_copyout,
+	.arch_file_measure = efi_tpm_measure_file,
 #if defined(__amd64__) || defined(__i386__)
 	.arch_hypervisor = x86_hypervisor,
 #endif
@@ -328,9 +329,39 @@ static bool
 probe_md_currdev(void)
 {
 #ifdef LOADER_MD_SUPPORT
+	struct disk_devdesc dev;
+	uint64_t mediasize;
 	bool rv;
 
-	set_currdev_devsw(&md_dev, 0);
+	/*
+	 * md is a DEVT_DISK, so it needs a disk_devdesc: set_currdev_devsw()
+	 * would pass a plain devdesc and devformat() would read the slice and
+	 * partition off the end of it. Leave both wild for md_open() to
+	 * resolve against whatever partition table the image carries.
+	 */
+	dev.dd.d_dev = &md_dev;
+	dev.dd.d_unit = 0;
+	dev.dd.d_opendata = NULL;
+	dev.d_slice = D_SLICEWILD;
+	dev.d_partition = D_PARTWILD;
+	dev.d_offset = 0;
+
+	/*
+	 * devformat() prints d_slice verbatim, and D_SLICEWILD is 0, which
+	 * would name a slice that cannot exist. Open the device first so
+	 * disk_open() writes the resolved slice and partition back, then
+	 * name that.
+	 */
+	if (md_get_size(0, &mediasize) == 0 &&
+	    disk_open(&dev, mediasize, MD_BLOCK_SIZE) == 0) {
+		disk_close(&dev);
+	} else {
+		/* No partition table: use the whole image as the filesystem. */
+		dev.d_slice = D_SLICENONE;
+		dev.d_partition = D_PARTNONE;
+	}
+
+	set_currdev_devdesc((struct devdesc *)&dev);
 	rv = sanity_check_currdev();
 	if (!rv)
 		printf("MD not present\n");
@@ -1380,13 +1411,19 @@ main(int argc, CHAR16 *argv[])
 	 */
 	efiblk_memdisk_preload();
 
-	devinit();
-
 	/*
 	 * Parse command line arguments before any operation that may configure
 	 * the network so DHCP overrides are available on the first attempt.
 	 */
 	howto = parse_args(argc, argv);
+
+	/*
+	 * We want to initialize after giving loader args a chance to elect a
+	 * different console than what we autodetect, but we need efinet to
+	 * have initialized before netbooting an initmd has any chance of
+	 * working.
+	 */
+	devinit();
 
 	/*
 	 * If we didn't find a ipxe image, and we're netbooting, try to

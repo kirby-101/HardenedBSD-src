@@ -212,7 +212,7 @@ ipcomp_input(struct mbuf *m, struct secasvar *sav, int skip, int protoff)
 	 * compression it means someone is playing tricks on us.
 	 */
 	error = ENOBUFS;
-	if (m->m_len < skip + hlen && (m = m_pullup(m, skip + hlen)) == NULL) {
+	if ((m = m_pullup(m, skip + hlen)) == NULL) {
 		IPCOMPSTAT_INC(ipcomps_hdrops);		/*XXX*/
 		DPRINTF(("%s: m_pullup failed\n", __func__));
 		key_freesav(&sav);
@@ -289,7 +289,6 @@ ipcomp_input_cb(struct cryptop *crp)
 	struct secasvar *sav;
 	struct secasindex *saidx;
 	caddr_t addr;
-	crypto_session_t cryptoid;
 	int hlen = IPCOMP_HLENGTH, error, clen;
 	int skip, protoff;
 	uint8_t nproto;
@@ -300,7 +299,6 @@ ipcomp_input_cb(struct cryptop *crp)
 	sav = xd->sav;
 	skip = xd->skip;
 	protoff = xd->protoff;
-	cryptoid = xd->cryptoid;
 	ipsec_sahtree_rlock(&sahtree_tracker);
 	if (sav->state >= SADB_SASTATE_DEAD) {
 		/* saidx is freed */
@@ -317,10 +315,8 @@ ipcomp_input_cb(struct cryptop *crp)
 	/* Check for crypto errors */
 	if (crp->crp_etype) {
 		if (crp->crp_etype == EAGAIN) {
-			/* Reset the session ID */
-			if (ipsec_updateid(sav, &crp->crp_session, &cryptoid) != 0)
-				crypto_freesession(cryptoid);
-			xd->cryptoid = crp->crp_session;
+			ipsec_crypto_retry(sav, xd, crp);
+			ipsec_sahtree_runlock(&sahtree_tracker);
 			CURVNET_RESTORE();
 			return (crypto_dispatch(crp));
 		}
@@ -347,7 +343,7 @@ ipcomp_input_cb(struct cryptop *crp)
 	/* In case it's not done already, adjust the size of the mbuf chain */
 	m->m_pkthdr.len = clen + hlen + skip;
 
-	if (m->m_len < skip + hlen && (m = m_pullup(m, skip + hlen)) == NULL) {
+	if ((m = m_pullup(m, skip + hlen)) == NULL) {
 		IPCOMPSTAT_INC(ipcomps_hdrops);		/*XXX*/
 		DPRINTF(("%s: m_pullup failed\n", __func__));
 		error = EINVAL;				/*XXX*/
@@ -392,7 +388,6 @@ ipcomp_input_cb(struct cryptop *crp)
 	return error;
 bad:
 	ipsec_sahtree_runlock(&sahtree_tracker);
-	CURVNET_RESTORE();
 	if (sav != NULL)
 		key_freesav(&sav);
 	if (m != NULL)
@@ -401,6 +396,7 @@ bad:
 		free(xd, M_IPCOMP);
 	if (crp != NULL)
 		crypto_freereq(crp);
+	CURVNET_RESTORE();
 	return error;
 }
 
@@ -547,7 +543,6 @@ ipcomp_output_cb(struct cryptop *crp)
 	struct secpolicy *sp;
 	struct secasvar *sav;
 	struct mbuf *m;
-	crypto_session_t cryptoid;
 	u_int idx;
 	int error, skip, protoff;
 
@@ -559,15 +554,11 @@ ipcomp_output_cb(struct cryptop *crp)
 	sav = xd->sav;
 	skip = xd->skip;
 	protoff = xd->protoff;
-	cryptoid = xd->cryptoid;
 
 	/* Check for crypto errors */
 	if (crp->crp_etype) {
 		if (crp->crp_etype == EAGAIN) {
-			/* Reset the session ID */
-			if (ipsec_updateid(sav, &crp->crp_session, &cryptoid) != 0)
-				crypto_freesession(cryptoid);
-			xd->cryptoid = crp->crp_session;
+			ipsec_crypto_retry(sav, xd, crp);
 			CURVNET_RESTORE();
 			return (crypto_dispatch(crp));
 		}
@@ -669,11 +660,11 @@ ipcomp_output_cb(struct cryptop *crp)
 bad:
 	if (m)
 		m_freem(m);
-	CURVNET_RESTORE();
 	free(xd, M_IPCOMP);
 	crypto_freereq(crp);
 	key_freesav(&sav);
 	key_freesp(&sp);
+	CURVNET_RESTORE();
 	return (error);
 }
 

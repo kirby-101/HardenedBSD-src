@@ -59,7 +59,6 @@ extern SLIST_HEAD(pcm_synclist, pcmchan_syncgroup) snd_pcm_syncgroups;
 
 #define PCM_SG_LOCKPTR()	(&snd_pcm_syncgroups_mtx)
 #define PCM_SG_LOCK()		mtx_lock(PCM_SG_LOCKPTR())
-#define PCM_SG_TRYLOCK()	mtx_trylock(PCM_SG_LOCKPTR())
 #define PCM_SG_UNLOCK()		mtx_unlock(PCM_SG_LOCKPTR())
 #define PCM_SG_LOCKASSERT(arg)	mtx_assert(PCM_SG_LOCKPTR(), arg)
 
@@ -122,8 +121,6 @@ struct pcm_channel {
 	 * lock.
 	 */
 	unsigned int inprog;
-	/* Incrememnt/decrement around cv_timedwait_sig() in chn_sleep(). */
-	unsigned int sleeping;
 	/**
 	 * Special channel operations should examine @c inprog after acquiring
 	 * lock.  If zero, operations may continue.  Else, thread should
@@ -143,10 +140,6 @@ struct pcm_channel {
 	 * container.
 	 */
 	struct pcmchan_syncmember *sm;
-#ifdef OSSV4_EXPERIMENT
-	uint16_t lpeak, rpeak;	/**< Peak value from 0-32767. */
-#endif
-
 	struct {
 		SLIST_HEAD(, pcm_channel) head;
 		SLIST_ENTRY(pcm_channel) link;
@@ -172,10 +165,10 @@ struct pcm_channel {
 	} channels;
 
 	struct pcmchan_matrix matrix;
-  	struct pcmchan_matrix matrix_scratch;
+	struct pcmchan_matrix matrix_scratch;
 
 	int16_t volume[SND_VOL_C_MAX][SND_CHN_T_VOL_MAX];
-  	int8_t muted[SND_VOL_C_MAX][SND_CHN_T_VOL_MAX];
+	int8_t muted[SND_VOL_C_MAX][SND_CHN_T_VOL_MAX];
 };
 
 #define CHN_HEAD(x, y)			&(x)->y.head
@@ -202,7 +195,7 @@ struct pcm_channel {
 	CHN_FOREACH(t, x, z) {						\
 		if (t == y)						\
 			break;						\
-	} 								\
+	}								\
 	if (t != y)							\
 		CHN_INSERT_HEAD(x, y, z);				\
 } while (0)
@@ -212,7 +205,7 @@ struct pcm_channel {
 	CHN_FOREACH(t, w, z) {						\
 		if (t == y)						\
 			break;						\
-	} 								\
+	}								\
 	if (t != y)							\
 		CHN_INSERT_AFTER(x, y, z);				\
 } while (0)
@@ -268,7 +261,8 @@ char *chn_mkname(char *buf, size_t len, struct pcm_channel *c);
 struct pcm_channel *chn_init(struct snddev_info *d, struct pcm_channel *parent,
     kobj_class_t cls, int dir, void *devinfo);
 void chn_kill(struct pcm_channel *c);
-void chn_shutdown(struct pcm_channel *c);
+void chn_shutdownall(struct snddev_info *d);
+void chn_killall(struct snddev_info *d);
 int chn_release(struct pcm_channel *c);
 int chn_reset(struct pcm_channel *c, uint32_t fmt, uint32_t spd);
 int chn_setvolume_multi(struct pcm_channel *c, int vc, int left, int right,
@@ -305,10 +299,6 @@ int chn_notify(struct pcm_channel *c, uint32_t flags);
 
 int chn_getrates(struct pcm_channel *c, int **rates);
 int chn_syncdestroy(struct pcm_channel *c);
-
-#ifdef OSSV4_EXPERIMENT
-int chn_getpeaks(struct pcm_channel *c, int *lpeak, int *rpeak);
-#endif
 
 #define CHN_LOCKOWNED(c)	mtx_owned(&(c)->lock)
 #define CHN_LOCK(c)		mtx_lock(&(c)->lock)
@@ -358,7 +348,7 @@ enum {
 #define CHN_F_NBIO              0x00000040  /* do non-blocking i/o */
 #define CHN_F_MMAP		0x00000080  /* has been mmap()ed */
 
-#define CHN_F_BUSY              0x00000100  /* has been opened 	*/
+#define CHN_F_BUSY              0x00000100  /* has been opened	*/
 #define CHN_F_DIRTY		0x00000200  /* need re-config */
 #define CHN_F_DEAD		0x00000400  /* too many errors, dead, mdk */
 /* unused			0x00000800 */
@@ -404,7 +394,7 @@ enum {
 
 #define CHN_F_MMAP_INVALID	(CHN_F_DEAD | CHN_F_RUNNING)
 
-					
+
 
 #define CHN_N_BLOCKSIZE		0x00000001
 #define CHN_N_TRIGGER		0x00000002

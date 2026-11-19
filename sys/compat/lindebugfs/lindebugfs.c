@@ -70,6 +70,7 @@
 #include <linux/compat.h>
 #include <linux/debugfs.h>
 #include <linux/fs.h>
+#include <linux/device.h>
 
 MALLOC_DEFINE(M_DFSINT, "debugfsint", "Linux debugfs internal");
 
@@ -350,7 +351,7 @@ debugfs_create_symlink(const char *name, struct dentry *parent,
 		pnode = debugfs_root;
 
 	pfs_create_link(pnode, &dnode->d_pfs_node, name, &debugfs_fill_data,
-	    NULL, NULL, NULL, PFS_NOWAIT);
+	    NULL, NULL, debugfs_destroy, PFS_NOWAIT);
 	if (dnode->d_pfs_node == NULL)
 		goto fail;
 	dnode->d_pfs_node->pn_data = dm;
@@ -809,6 +810,47 @@ debugfs_create_blob(const char *name, umode_t mode, struct dentry *parent,
 	return (debugfs_create_file(name, mode & 0444, parent, value, &__fops_blob_ro));
 }
 
+/* ---------------------------------------------------------------------------- */
+/* This should be migrated to ??? */
+
+struct debugfs_devm_seqfile {
+	struct device *dev;
+	int (*readfunc)(struct seq_file *, void *);
+};
+
+static int
+debugfs_devm_seqfile_open(struct inode *inode, struct linux_file *f)
+{
+	struct debugfs_devm_seqfile *s;
+
+	s = inode->i_private;
+	return (single_open(f, s->readfunc, s->dev));
+}
+
+static const struct file_operations debugfs_devm_seqfile_ops = {
+	.owner			= THIS_MODULE,
+	.open			= debugfs_devm_seqfile_open,
+	.read			= seq_read,
+	.llseek			= seq_lseek,
+	.release		= single_release,
+};
+
+void
+debugfs_create_devm_seqfile(struct device *dev, const char *name,
+    struct dentry *d, int (*readfunc)(struct seq_file *m, void *arg))
+{
+	struct debugfs_devm_seqfile *s;
+
+	s = devm_kzalloc(dev, sizeof(*s), GFP_KERNEL);
+	if (s == NULL)
+		return;
+
+	s->dev = dev;
+	s->readfunc = readfunc;
+
+	debugfs_create_file(name, 0444, d, s, &debugfs_devm_seqfile_ops);
+}
+/* ---------------------------------------------------------------------------- */
 
 static int
 lindebugfs_init(PFS_INIT_ARGS)

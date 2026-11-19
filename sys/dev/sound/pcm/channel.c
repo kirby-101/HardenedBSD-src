@@ -138,8 +138,6 @@ chn_vpc_proc(int reset, int db)
 		d = devclass_get_softc(pcm_devclass, i);
 		if (!PCM_REGISTERED(d))
 			continue;
-		PCM_LOCK(d);
-		PCM_WAIT(d);
 		PCM_ACQUIRE(d);
 		CHN_FOREACH(c, d, channels.pcm) {
 			CHN_LOCK(c);
@@ -149,7 +147,6 @@ chn_vpc_proc(int reset, int db)
 			CHN_UNLOCK(c);
 		}
 		PCM_RELEASE(d);
-		PCM_UNLOCK(d);
 	}
 	bus_topo_unlock();
 }
@@ -342,9 +339,7 @@ chn_sleep(struct pcm_channel *c, int timeout)
 	if (c->flags & CHN_F_DEAD)
 		return (EINVAL);
 
-	c->sleeping++;
 	ret = cv_timedwait_sig(&c->intr_cv, &c->lock, timeout);
-	c->sleeping--;
 
 	return ((c->flags & CHN_F_DEAD) ? EINVAL : ret);
 }
@@ -393,8 +388,8 @@ chn_dmaupdate(struct pcm_channel *c)
 static void
 chn_wrfeed(struct pcm_channel *c)
 {
-    	struct snd_dbuf *b = c->bufhard;
-    	struct snd_dbuf *bs = c->bufsoft;
+	struct snd_dbuf *b = c->bufhard;
+	struct snd_dbuf *bs = c->bufsoft;
 	unsigned int amt, want, wasfree;
 
 	CHN_LOCKASSERT(c);
@@ -471,17 +466,17 @@ chn_write(struct pcm_channel *c, struct uio *buf)
 		} else if (c->flags & (CHN_F_NBIO | CHN_F_NOTRIGGER)) {
 			/**
 			 * @todo Evaluate whether EAGAIN is truly desirable.
-			 * 	 4Front drivers behave like this, but I'm
-			 * 	 not sure if it at all violates the "write
-			 * 	 should be allowed to block" model.
+			 *	 4Front drivers behave like this, but I'm
+			 *	 not sure if it at all violates the "write
+			 *	 should be allowed to block" model.
 			 *
-			 * 	 The idea is that, while set with CHN_F_NOTRIGGER,
-			 * 	 a channel isn't playing, *but* without this we
-			 * 	 end up with "interrupt timeout / channel dead".
+			 *	 The idea is that, while set with CHN_F_NOTRIGGER,
+			 *	 a channel isn't playing, *but* without this we
+			 *	 end up with interrupt timeout.
 			 */
 			ret = EAGAIN;
 		} else {
-   			ret = chn_sleep(c, timeout);
+			ret = chn_sleep(c, timeout);
 			if (ret == ERESTART || ret == EINTR)
 				c->flags |= CHN_F_ABORTING;
 		}
@@ -496,8 +491,8 @@ chn_write(struct pcm_channel *c, struct uio *buf)
 static void
 chn_rdfeed(struct pcm_channel *c)
 {
-    	struct snd_dbuf *b = c->bufhard;
-    	struct snd_dbuf *bs = c->bufsoft;
+	struct snd_dbuf *b = c->bufhard;
+	struct snd_dbuf *bs = c->bufsoft;
 	unsigned int amt;
 
 	CHN_LOCKASSERT(c);
@@ -575,7 +570,7 @@ chn_read(struct pcm_channel *c, struct uio *buf)
 		} else if (c->flags & (CHN_F_NBIO | CHN_F_NOTRIGGER))
 			ret = EAGAIN;
 		else {
-   			ret = chn_sleep(c, timeout);
+			ret = chn_sleep(c, timeout);
 			if (ret == ERESTART || ret == EINTR)
 				c->flags |= CHN_F_ABORTING;
 		}
@@ -691,7 +686,7 @@ chn_resetbuf(struct pcm_channel *c)
 int
 chn_sync(struct pcm_channel *c, int threshold)
 {
-    	struct snd_dbuf *b, *bs;
+	struct snd_dbuf *b, *bs;
 	int ret, count, hcount, minflush, resid, residp, syncdelay, blksz;
 	uint32_t cflag;
 
@@ -769,7 +764,7 @@ chn_sync(struct pcm_channel *c, int threshold)
 	c->flags |= CHN_F_CLOSING;
 	while (count > 0 && (resid > 0 || minflush > 0)) {
 		ret = chn_sleep(c, c->timeout);
-    		if (ret == ERESTART || ret == EINTR) {
+		if (ret == ERESTART || ret == EINTR) {
 			c->flags |= CHN_F_ABORTING;
 			break;
 		} else if (ret == 0 || ret == EAGAIN) {
@@ -815,7 +810,7 @@ chn_sync(struct pcm_channel *c, int threshold)
 		    __func__, c->timeout, count, hcount, resid, residp,
 		    minflush, ret);
 
-    	return (0);
+	return (0);
 }
 
 /* called externally, handle locking */
@@ -827,7 +822,7 @@ chn_poll(struct pcm_channel *c, int ev, struct thread *td)
 
 	CHN_LOCKASSERT(c);
 
-    	if (!(c->flags & (CHN_F_MMAP | CHN_F_TRIGGERED))) {
+	if (!(c->flags & (CHN_F_MMAP | CHN_F_TRIGGERED))) {
 		ret = chn_start(c, 1);
 		if (ret != 0)
 			return (0);
@@ -852,9 +847,9 @@ chn_poll(struct pcm_channel *c, int ev, struct thread *td)
 int
 chn_abort(struct pcm_channel *c)
 {
-    	int missing = 0;
-    	struct snd_dbuf *b = c->bufhard;
-    	struct snd_dbuf *bs = c->bufsoft;
+	int missing = 0;
+	struct snd_dbuf *b = c->bufhard;
+	struct snd_dbuf *bs = c->bufsoft;
 
 	CHN_LOCKASSERT(c);
 	if (CHN_STOPPED(c))
@@ -867,7 +862,7 @@ chn_abort(struct pcm_channel *c)
 	sndbuf_setrun(b, 0);
 	if (!(c->flags & CHN_F_VIRTUAL))
 		chn_dmaupdate(c);
-    	missing = sndbuf_getready(bs);
+	missing = sndbuf_getready(bs);
 
 	c->flags &= ~CHN_F_ABORTING;
 	return missing;
@@ -887,11 +882,11 @@ chn_abort(struct pcm_channel *c)
 int
 chn_flush(struct pcm_channel *c)
 {
-    	struct snd_dbuf *b = c->bufhard;
+	struct snd_dbuf *b = c->bufhard;
 
 	CHN_LOCKASSERT(c);
 	KASSERT(c->direction == PCMDIR_PLAY, ("chn_flush on bad channel"));
-    	DEB(printf("chn_flush: c->flags 0x%08x\n", c->flags));
+	DEB(printf("chn_flush: c->flags 0x%08x\n", c->flags));
 
 	c->flags |= CHN_F_CLOSING;
 	chn_sync(c, 0);
@@ -900,8 +895,8 @@ chn_flush(struct pcm_channel *c)
 	chn_trigger(c, PCMTRIG_ABORT);
 	sndbuf_setrun(b, 0);
 
-    	c->flags &= ~CHN_F_CLOSING;
-    	return 0;
+	c->flags &= ~CHN_F_CLOSING;
+	return 0;
 }
 
 int
@@ -1024,7 +1019,7 @@ snd_str2afmt(const char *req)
 			}
 		}
 		/* found a match */
-		return (SND_FORMAT(afmt_tab[i].afmt, ch + ext, ext));	
+		return (SND_FORMAT(afmt_tab[i].afmt, ch + ext, ext));
 	}
 	/* not a valid format */
 	return (0);
@@ -1156,7 +1151,6 @@ chn_init(struct snddev_info *d, struct pcm_channel *parent, kobj_class_t cls,
 	int err, i, direction, *vchanrate, *vchanformat;
 
 	PCM_BUSYASSERT(d);
-	PCM_LOCKASSERT(d);
 
 	switch (dir) {
 	case PCMDIR_PLAY:
@@ -1186,7 +1180,6 @@ chn_init(struct snddev_info *d, struct pcm_channel *parent, kobj_class_t cls,
 		return (NULL);
 	}
 
-	PCM_UNLOCK(d);
 	b = NULL;
 	bs = NULL;
 
@@ -1250,8 +1243,8 @@ chn_init(struct snddev_info *d, struct pcm_channel *parent, kobj_class_t cls,
 
 	/**
 	 * @todo Should this be moved somewhere else?  The primary buffer
-	 * 	 is allocated by the driver or via DMA map setup, and tmpbuf
-	 * 	 seems to only come into existence in sndbuf_resize().
+	 *	 is allocated by the driver or via DMA map setup, and tmpbuf
+	 *	 seems to only come into existence in sndbuf_resize().
 	 */
 	if (c->direction == PCMDIR_PLAY) {
 		bs->sl = bs->maxsize;
@@ -1266,7 +1259,6 @@ chn_init(struct snddev_info *d, struct pcm_channel *parent, kobj_class_t cls,
 			goto fail;
 	}
 
-	PCM_LOCK(d);
 	CHN_INSERT_SORT_ASCEND(d, c, channels.pcm);
 	if ((c->flags & CHN_F_VIRTUAL) == 0) {
 		CHN_INSERT_SORT_ASCEND(d, c, channels.pcm.primary);
@@ -1279,7 +1271,6 @@ chn_init(struct snddev_info *d, struct pcm_channel *parent, kobj_class_t cls,
 
 fail:
 	chn_kill(c);
-	PCM_LOCK(d);
 
 	return (NULL);
 }
@@ -1293,7 +1284,6 @@ chn_kill(struct pcm_channel *c)
 
 	PCM_BUSYASSERT(c->parentsnddev);
 
-	PCM_LOCK(d);
 	CHN_REMOVE(d, c, channels.pcm);
 	if ((c->flags & CHN_F_VIRTUAL) == 0)
 		CHN_REMOVE(d, c, channels.pcm.primary);
@@ -1314,7 +1304,6 @@ chn_kill(struct pcm_channel *c)
 	default:
 		__assert_unreachable();
 	}
-	PCM_UNLOCK(d);
 
 	if (CHN_STARTED(c)) {
 		CHN_LOCK(c);
@@ -1339,13 +1328,50 @@ chn_kill(struct pcm_channel *c)
 	free(c, M_DEVBUF);
 }
 
-void
+static void
 chn_shutdown(struct pcm_channel *c)
 {
 	CHN_LOCKASSERT(c);
 
 	chn_wakeup(c);
 	c->flags |= CHN_F_DEAD;
+}
+
+void
+chn_shutdownall(struct snddev_info *d)
+{
+	struct pcm_channel *c;
+
+	PCM_BUSYASSERT(d);
+	KASSERT(!PCM_REGISTERED(d), ("%s(): still registered", __func__));
+
+	CHN_FOREACH(c, d, channels.pcm) {
+		CHN_LOCK(c);
+		chn_shutdown(c);
+		if (c->inprog == 0 && CHN_STOPPED(c)) {
+			CHN_UNLOCK(c);
+			continue;
+		}
+		if (c->direction == PCMDIR_PLAY)
+			chn_flush(c);
+		else
+			chn_abort(c);
+		CHN_UNLOCK(c);
+	}
+}
+
+void
+chn_killall(struct snddev_info *d)
+{
+	struct pcm_channel *c;
+
+	PCM_BUSYASSERT(d);
+	KASSERT(!PCM_REGISTERED(d), ("%s(): still registered", __func__));
+
+	while (!CHN_EMPTY(d, channels.pcm)) {
+		c = CHN_FIRST(d, channels.pcm);
+		chn_kill(c);
+	}
 }
 
 /* release a locked channel and unlock it */
@@ -1831,9 +1857,15 @@ chn_calclatency(int dir, int latency, int bps, uint32_t datarate,
 	return blksz << blkcnt;
 }
 
+static bool
+chn_may_resizebuf(struct pcm_channel *c)
+{
+	return ((c->flags & (CHN_F_MMAP | CHN_F_TRIGGERED)) == 0 &&
+	    c->inprog == 0);
+}
+
 static int
-chn_resizebuf(struct pcm_channel *c, int latency,
-					int blkcnt, int blksz)
+chn_resizebuf(struct pcm_channel *c, int latency, int blkcnt, int blksz)
 {
 	struct snd_dbuf *b, *bs, *pb;
 	int sblksz, sblkcnt, hblksz, hblkcnt, limit = 0, nsblksz, nsblkcnt;
@@ -1841,8 +1873,9 @@ chn_resizebuf(struct pcm_channel *c, int latency,
 
 	CHN_LOCKASSERT(c);
 
-	if ((c->flags & (CHN_F_MMAP | CHN_F_TRIGGERED)) ||
-	    !(c->direction == PCMDIR_PLAY || c->direction == PCMDIR_REC))
+	if (!(c->direction == PCMDIR_PLAY || c->direction == PCMDIR_REC))
+		return EINVAL;
+	if (!chn_may_resizebuf(c))
 		return EINVAL;
 
 	if (latency == -1) {
@@ -1900,6 +1933,9 @@ chn_resizebuf(struct pcm_channel *c, int latency,
 		chn_notify(c->parentchannel, CHN_N_BLOCKSIZE);
 		CHN_UNLOCK(c->parentchannel);
 		CHN_LOCK(c);
+		/* Revalidate. */
+		if (!chn_may_resizebuf(c))
+			return EINVAL;
 		if (c->direction == PCMDIR_PLAY) {
 			limit = (pb != NULL) ?
 			    sndbuf_xbytes(pb->bufsize, pb, bs) : 0;
@@ -1965,6 +2001,9 @@ chn_resizebuf(struct pcm_channel *c, int latency,
 			b->blksz = nblksz;
 		}
 		CHN_LOCK(c);
+		/* Revalidate. */
+		if (!chn_may_resizebuf(c))
+			return EINVAL;
 
 		if (!CHN_EMPTY(c, children)) {
 			nsblksz = round_blksz(
@@ -2328,8 +2367,8 @@ chn_trigger(struct pcm_channel *c, int go)
  * running in 16 bit stereo mode would require 4 bytes per sample, so a
  * hwptr value ranging from 32-35 would be returned as 32.)
  *
- * @param c	PCM channel context	
- * @returns 	sample-aligned hardware buffer pointer index
+ * @param c	PCM channel context
+ * @returns	sample-aligned hardware buffer pointer index
  */
 int
 chn_getptr(struct pcm_channel *c)
@@ -2583,9 +2622,9 @@ chn_getrates(struct pcm_channel *c, int **rates)
  *
  * @param c	channel device to be started or closed
  * @returns	If this channel was the only member of a group, the group ID
- * 		is returned to the caller so that the caller can release it
- * 		via free_unr() after giving up the syncgroup lock.  Else it
- * 		returns 0.
+ *		is returned to the caller so that the caller can release it
+ *		via free_unr() after giving up the syncgroup lock.  Else it
+ *		returns 0.
  */
 int
 chn_syncdestroy(struct pcm_channel *c)
@@ -2617,12 +2656,3 @@ chn_syncdestroy(struct pcm_channel *c)
 
 	return sg_id;
 }
-
-#ifdef OSSV4_EXPERIMENT
-int
-chn_getpeaks(struct pcm_channel *c, int *lpeak, int *rpeak)
-{
-	CHN_LOCKASSERT(c);
-	return CHANNEL_GETPEAKS(c->methods, c->devinfo, lpeak, rpeak);
-}
-#endif

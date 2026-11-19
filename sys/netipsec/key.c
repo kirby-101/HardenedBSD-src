@@ -42,6 +42,7 @@
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/hash.h>
 #include <sys/kernel.h>
 #include <sys/fnv_hash.h>
 #include <sys/lock.h>
@@ -183,6 +184,10 @@ static struct rmlock sptree_lock;
 #define	SPTREE_WLOCK_ASSERT()   rm_assert(&sptree_lock, RA_WLOCKED)
 #define	SPTREE_UNLOCK_ASSERT()  rm_assert(&sptree_lock, RA_UNLOCKED)
 
+/* Size of the SPD */
+VNET_DEFINE_STATIC(unsigned long, spd_size) = 0;
+#define	V_spd_size		VNET(spd_size)
+
 /* Hash table for lookup SP using unique id */
 VNET_DEFINE_STATIC(struct secpolicy_list *, sphashtbl);
 VNET_DEFINE_STATIC(u_long, sphash_mask);
@@ -209,8 +214,6 @@ VNET_DEFINE_STATIC(u_int, key_spdcache_maxentries) = 0;
 #define	V_key_spdcache_maxentries	VNET(key_spdcache_maxentries)
 VNET_DEFINE_STATIC(u_int, key_spdcache_threshold) = 32;
 #define	V_key_spdcache_threshold	VNET(key_spdcache_threshold)
-VNET_DEFINE_STATIC(unsigned long, spd_size) = 0;
-#define	V_spd_size		VNET(spd_size)
 
 #define SPDCACHE_ENABLED()	(V_key_spdcache_maxentries != 0)
 #define SPDCACHE_ACTIVE() \
@@ -1410,7 +1413,6 @@ key_unregister_ifnet(struct secpolicy **spp, u_int count)
 		ipsec_accel_spddel(spp[i]);
 		TAILQ_REMOVE(&V_sptree_ifnet[spp[i]->spidx.dir],
 		    spp[i], chain);
-		V_spd_size--;
 		LIST_REMOVE(spp[i], idhash);
 	}
 	SPTREE_WUNLOCK();
@@ -2224,11 +2226,9 @@ key_spdadd(struct socket *so, struct mbuf *m, const struct sadb_msghdr *mhp)
 	if (!n)
 		return key_senderror(so, m, ENOBUFS);
 
-	if (n->m_len < sizeof(*newmsg)) {
-		n = m_pullup(n, sizeof(*newmsg));
-		if (!n)
-			return key_senderror(so, m, ENOBUFS);
-	}
+	if ((n = m_pullup(n, sizeof(*newmsg))) == NULL)
+		return key_senderror(so, m, ENOBUFS);
+
 	newmsg = mtod(n, struct sadb_msg *);
 	newmsg->sadb_msg_errno = 0;
 	newmsg->sadb_msg_len = PFKEY_UNIT64(n->m_pkthdr.len);
@@ -2808,11 +2808,8 @@ key_setdumpsp(struct secpolicy *sp, u_int8_t type, u_int32_t seq,
 	if ((result->m_flags & M_PKTHDR) == 0)
 		goto fail;
 
-	if (result->m_len < sizeof(struct sadb_msg)) {
-		result = m_pullup(result, sizeof(struct sadb_msg));
-		if (result == NULL)
-			goto fail;
-	}
+	if ((result = m_pullup(result, sizeof(struct sadb_msg))) == NULL)
+		goto fail;
 
 	result->m_pkthdr.len = 0;
 	for (m = result; m; m = m->m_next)
@@ -2945,12 +2942,9 @@ key_spdexpire(struct secpolicy *sp)
 		goto fail;
 	}
 
-	if (result->m_len < sizeof(struct sadb_msg)) {
-		result = m_pullup(result, sizeof(struct sadb_msg));
-		if (result == NULL) {
-			error = ENOBUFS;
-			goto fail;
-		}
+	if ((result = m_pullup(result, sizeof(struct sadb_msg))) == NULL) {
+		error = ENOBUFS;
+		goto fail;
 	}
 
 	result->m_pkthdr.len = 0;
@@ -3090,6 +3084,9 @@ key_newsav(const struct sadb_msghdr *mhp, struct secasindex *saidx,
 	}
 
 	sav->spi = spi;
+	/* Hash the SPI in host order: the same flow ID on every architecture. */
+	spi = ntohl(spi);
+	sav->flowid = jenkins_hash32(&spi, 1, 0);
 	sav->seq = mhp->msg->sadb_msg_seq;
 	sav->state = SADB_SASTATE_LARVAL;
 	sav->pid = (pid_t)mhp->msg->sadb_msg_pid;
@@ -3291,7 +3288,8 @@ key_delsav(struct secasvar *sav)
 		rm_destroy(sav->lock);
 		free(sav->lock, M_IPSEC_MISC);
 		uma_zfree_pcpu(ipsec_key_lft_zone, sav->lft_c);
-	}
+	} else
+		key_freesah(&sav->sah);
 #ifdef IPSEC_OFFLOAD
 	/* XXXKIB should this be moved to key_cleansav()? */
 	uma_zfree_pcpu(ipsec_key_lft_zone, sav->accel_lft_sw);
@@ -3956,11 +3954,8 @@ key_setdumpsa(struct secasvar *sav, uint8_t type, uint8_t satype,
 
 	m_cat(result, tres);
 	tres = NULL;
-	if (result->m_len < sizeof(struct sadb_msg)) {
-		result = m_pullup(result, sizeof(struct sadb_msg));
-		if (result == NULL)
-			goto fail;
-	}
+	if ((result = m_pullup(result, sizeof(struct sadb_msg))) == NULL)
+		goto fail;
 
 	result->m_pkthdr.len = 0;
 	for (m = result; m; m = m->m_next)
@@ -5206,11 +5201,8 @@ key_getspi(struct socket *so, struct mbuf *m, const struct sadb_msghdr *mhp)
 		goto fail;
 	}
 
-	if (n->m_len < sizeof(struct sadb_msg)) {
-		n = m_pullup(n, sizeof(struct sadb_msg));
-		if (n == NULL)
-			return key_sendup_mbuf(so, m, KEY_SENDUP_ONE);
-	}
+	if ((n = m_pullup(n, sizeof(struct sadb_msg))) == NULL)
+		return (key_sendup_mbuf(so, m, KEY_SENDUP_ONE));
 
 	n->m_pkthdr.len = 0;
 	for (nn = n; nn; nn = nn->m_next)
@@ -5517,9 +5509,12 @@ key_updateaddresses(struct socket *so, struct mbuf *m,
 	}
 	/*
 	 * isnew == 1 -> @sah was referenced by key_getsah().
-	 * isnew == 0 -> we use the same @sah, that was used by @sav,
-	 *	and we use its reference for @newsav.
+	 * isnew == 0 -> we use the same @sah, that was used by @sav.
+	 * @sav keeps its own reference until key_delsav(): a sender that
+	 * still holds @sav reads its SAH.
 	 */
+	if (isnew == 0)
+		SAH_ADDREF(sah);
 	SECASVAR_WLOCK(sav);
 	/* XXX: replace cntr with pointer? */
 	newsav->cntr = sav->cntr;
@@ -6277,11 +6272,9 @@ key_getmsgbuf_x1(struct mbuf *m, const struct sadb_msghdr *mhp)
 	if (!n)
 		return NULL;
 
-	if (n->m_len < sizeof(struct sadb_msg)) {
-		n = m_pullup(n, sizeof(struct sadb_msg));
-		if (n == NULL)
-			return NULL;
-	}
+	if ((n = m_pullup(n, sizeof(struct sadb_msg))) == NULL)
+		return NULL;
+
 	mtod(n, struct sadb_msg *)->sadb_msg_errno = 0;
 	mtod(n, struct sadb_msg *)->sadb_msg_len =
 	    PFKEY_UNIT64(n->m_pkthdr.len);
@@ -6388,11 +6381,9 @@ key_delete(struct socket *so, struct mbuf *m, const struct sadb_msghdr *mhp)
 	if (!n)
 		return key_senderror(so, m, ENOBUFS);
 
-	if (n->m_len < sizeof(struct sadb_msg)) {
-		n = m_pullup(n, sizeof(struct sadb_msg));
-		if (n == NULL)
-			return key_senderror(so, m, ENOBUFS);
-	}
+	if ((n = m_pullup(n, sizeof(struct sadb_msg))) == NULL)
+		return (key_senderror(so, m, ENOBUFS));
+
 	newmsg = mtod(n, struct sadb_msg *);
 	newmsg->sadb_msg_errno = 0;
 	newmsg->sadb_msg_len = PFKEY_UNIT64(n->m_pkthdr.len);
@@ -6450,11 +6441,9 @@ key_delete_all(struct socket *so, struct mbuf *m,
 	if (!n)
 		return key_senderror(so, m, ENOBUFS);
 
-	if (n->m_len < sizeof(struct sadb_msg)) {
-		n = m_pullup(n, sizeof(struct sadb_msg));
-		if (n == NULL)
-			return key_senderror(so, m, ENOBUFS);
-	}
+	if ((n = m_pullup(n, sizeof(struct sadb_msg))) == NULL)
+		return (key_senderror(so, m, ENOBUFS));
+
 	newmsg = mtod(n, struct sadb_msg *);
 	newmsg->sadb_msg_errno = 0;
 	newmsg->sadb_msg_len = PFKEY_UNIT64(n->m_pkthdr.len);
@@ -7091,12 +7080,9 @@ key_acquire(const struct secasindex *saidx, struct secpolicy *sp)
 		goto fail;
 	}
 
-	if (result->m_len < sizeof(struct sadb_msg)) {
-		result = m_pullup(result, sizeof(struct sadb_msg));
-		if (result == NULL) {
-			error = ENOBUFS;
-			goto fail;
-		}
+	if ((result = m_pullup(result, sizeof(struct sadb_msg))) == NULL) {
+		error = ENOBUFS;
+		goto fail;
 	}
 
 	result->m_pkthdr.len = 0;
@@ -7732,12 +7718,9 @@ key_expire(struct secasvar *sav, int hard)
 		goto fail;
 	}
 
-	if (result->m_len < sizeof(struct sadb_msg)) {
-		result = m_pullup(result, sizeof(struct sadb_msg));
-		if (result == NULL) {
-			error = ENOBUFS;
-			goto fail;
-		}
+	if ((result = m_pullup(result, sizeof(struct sadb_msg))) == NULL) {
+		error = ENOBUFS;
+		goto fail;
 	}
 
 	result->m_pkthdr.len = 0;
@@ -8101,11 +8084,9 @@ key_parse(struct mbuf *m, struct socket *so)
 	IPSEC_ASSERT(so != NULL, ("null socket"));
 	IPSEC_ASSERT(m != NULL, ("null mbuf"));
 
-	if (m->m_len < sizeof(struct sadb_msg)) {
-		m = m_pullup(m, sizeof(struct sadb_msg));
-		if (!m)
-			return ENOBUFS;
-	}
+	if ((m = m_pullup(m, sizeof(struct sadb_msg))) == NULL)
+		return ENOBUFS;
+
 	msg = mtod(m, struct sadb_msg *);
 	orglen = PFKEY_UNUNIT64(msg->sadb_msg_len);
 	target = KEY_SENDUP_ONE;

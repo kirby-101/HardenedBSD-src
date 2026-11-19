@@ -30,7 +30,11 @@
  * SUCH DAMAGE.
  */
 
-/* Support for the AMD K8 and later processors */
+/*
+ * Support for 64-bit AMD processors:
+ *  - Zen families of microarchitectures
+ *  - (legacy) K8-K10, up to Bulldozer and Jaguar families
+ */
 
 #include <sys/param.h>
 #include <sys/lock.h>
@@ -51,12 +55,13 @@
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
 #include <machine/specialreg.h>
+#include <machine/smp.h>
 
 #define	OVERFLOW_WAIT_COUNT	50
 
 DPCPU_DEFINE_STATIC(uint32_t, nmi_counter);
 
-/* AMD K8 PMCs */
+/* AMD PMC decriptors */
 struct amd_descr {
 	struct pmc_descr pm_descr;   /* "base class" */
 	uint32_t	pm_evsel;    /* address of EVSEL register */
@@ -68,6 +73,11 @@ static struct amd_descr *amd_pmcdesc;
 
 static int amd_npmcs;
 static int amd_core_npmcs, amd_l3_npmcs, amd_df_npmcs, amd_umc_npmcs;
+static u_int amd_umc_nchannels;
+static uint32_t *amd_umc_gate_evsel;	/* [amd_umc_nchannels] */
+static u_int amd_umc_pkg_shift;
+static u_int amd_umc_npkgs;
+static u_int *amd_umc_gate_refcnt;	/* [amd_umc_npkgs] */
 
 struct amd_event_code_map {
 	enum pmc_event	pe_ev;	 /* enum value */
@@ -244,7 +254,7 @@ amd_init_policy(void)
 	amd_l3_allowed_mask = (family <= 0x17) ?
 	    AMD_PMC_L3_FAMILY17_MASK : AMD_PMC_L3_FAMILY19_MASK;
 
-	amd_df_allowed_mask = (family <= 0x19) ?
+	amd_df_allowed_mask = (family <= 0x19 && !amd_perfmon_v2) ?
 	    AMD_PMC_DF_FAMILY17_MASK : AMD_PMC_DF_FAMILY1A_MASK;
 
 	amd_umc_allowed_mask = AMD_PMC_UMC_MASK;
@@ -403,6 +413,7 @@ static int
 amd_read_pmc(int cpu, int ri, struct pmc *pm, pmc_value_t *v)
 {
 	const struct amd_descr *pd;
+	struct pmc_pcpu_state *pps;
 	pmc_value_t tmp;
 	enum pmc_mode mode;
 
@@ -421,7 +432,19 @@ amd_read_pmc(int cpu, int ri, struct pmc *pm, pmc_value_t *v)
 
 	tmp = rdmsr(pd->pm_perfctr); /* RDMSR serializes */
 	PMCDBG2(MDP, REA, 2, "amd-read (pre-munge) id=%d -> %jd", ri, tmp);
-	if (PMC_IS_SAMPLING_MODE(mode)) {
+	if (pd->pm_subclass == PMC_AMD_SUB_CLASS_UMC) {
+		/*
+		 * UMC counters saturate at 2^48 instead of wrapping.  Clear
+		 * bit 47 once it is set and keep the carries in software.
+		 */
+		pps = &pm->pm_pcpu_state[cpu];
+		if ((tmp & (1ULL << 47)) != 0) {
+			tmp &= ~(1ULL << 47);
+			wrmsr(pd->pm_perfctr, tmp);
+			pps->pps_overflowcnt++;
+		}
+		tmp += (pmc_value_t)pps->pps_overflowcnt << 47;
+	} else if (PMC_IS_SAMPLING_MODE(mode)) {
 		/*
 		 * Clamp value to 0 if the counter just overflowed,
 		 * otherwise the returned reload count would wrap to a
@@ -459,9 +482,14 @@ amd_write_pmc(int cpu, int ri, struct pmc *pm, pmc_value_t v)
 	pd = &amd_pmcdesc[ri];
 	mode = PMC_TO_MODE(pm);
 
-	/* use 2's complement of the count for sampling mode PMCs */
-	if (PMC_IS_SAMPLING_MODE(mode))
+	if (pd->pm_subclass == PMC_AMD_SUB_CLASS_UMC) {
+		/* Bits 47 and up are kept in software, see amd_read_pmc(). */
+		pm->pm_pcpu_state[cpu].pps_overflowcnt = v >> 47;
+		v &= (1ULL << 47) - 1;
+	} else if (PMC_IS_SAMPLING_MODE(mode)) {
+		/* use 2's complement of the count for sampling mode PMCs */
 		v = AMD_RELOAD_COUNT_TO_PERFCTR_VALUE(v);
+	}
 
 	PMCDBG3(MDP, WRI, 1, "amd-write cpu=%d ri=%d v=%jx", cpu, ri, v);
 
@@ -791,7 +819,10 @@ amd_start_pmc_v2(int cpu __diagused, int ri, struct pmc *pm)
 	}
 
 	/* Enable EVSEL while the virtual slot's global bit is off. */
-	config = pm->pm_md.pm_amd.pm_amd_evsel | AMD_PMC_ENABLE;
+	if (pd->pm_subclass == PMC_AMD_SUB_CLASS_UMC)
+		config = pm->pm_md.pm_amd.pm_amd_evsel | AMD_PMC_UMC_ENABLE;
+	else
+		config = pm->pm_md.pm_amd.pm_amd_evsel | AMD_PMC_ENABLE;
 	wrmsr(pd->pm_evsel, config);
 
 	if (pd->pm_subclass == PMC_AMD_SUB_CLASS_CORE &&
@@ -862,6 +893,7 @@ amd_stop_pmc_v2(int cpu __diagused, int ri, struct pmc *pm)
 {
 	const struct amd_descr *pd;
 	enum pmc_mode mode;
+	uint64_t config;
 	int i;
 
 	KASSERT(cpu >= 0 && cpu < pmc_cpu_max(),
@@ -882,8 +914,11 @@ amd_stop_pmc_v2(int cpu __diagused, int ri, struct pmc *pm)
 	}
 
 	/* Disable EVSEL after the counter's global bit is off. */
-	wrmsr(pd->pm_evsel,
-	    pm->pm_md.pm_amd.pm_amd_evsel & ~AMD_PMC_ENABLE);
+	if (pd->pm_subclass == PMC_AMD_SUB_CLASS_UMC)
+		config = pm->pm_md.pm_amd.pm_amd_evsel & ~AMD_PMC_UMC_ENABLE;
+	else
+		config = pm->pm_md.pm_amd.pm_amd_evsel & ~AMD_PMC_ENABLE;
+	wrmsr(pd->pm_evsel, config);
 
 	/* Wait out an in-flight overflow NMI.  The handler clears the status bit. */
 	if (pd->pm_subclass == PMC_AMD_SUB_CLASS_CORE &&
@@ -1211,6 +1246,15 @@ amd_get_caps(int ri, uint32_t *caps)
 	return (0);
 }
 
+static u_int
+amd_umc_pkg_of(int cpu)
+{
+	/* Single-socket or undetected topology: all CPUs map to package 0. */
+	if (amd_umc_pkg_shift == 0)
+		return (0);
+	return ((u_int)cpu_apic_ids[cpu] >> amd_umc_pkg_shift);
+}
+
 /*
  * Processor-dependent initialization.
  */
@@ -1221,6 +1265,7 @@ amd_pcpu_init(struct pmc_mdep *md, int cpu)
 	struct pmc_cpu *pc;
 	struct pmc_hw  *phw;
 	int first_ri, n;
+	u_int ch, pkg;
 
 	KASSERT(cpu >= 0 && cpu < pmc_cpu_max(),
 	    ("[amd,%d] insane cpu number %d", __LINE__, cpu));
@@ -1244,13 +1289,21 @@ amd_pcpu_init(struct pmc_mdep *md, int cpu)
 		    __LINE__, cpu));
 		amd_v2_disable_all();
 	}
+	if (amd_umc_gate_evsel != NULL) {
+		pkg = amd_umc_pkg_of(cpu);
+		if (atomic_fetchadd_int(&amd_umc_gate_refcnt[pkg], 1) == 0) {
+			for (ch = 0; ch < amd_umc_nchannels; ch++)
+				wrmsr(amd_umc_gate_evsel[ch],
+				    AMD_PMC_UMC_ENABLE);
+		}
+	}
 
 	/*
 	 * Set the content of the hardware descriptors to a known
 	 * state and initialize pointers in the MI per-cpu descriptor.
 	 */
 	pc = pmc_pcpu[cpu];
-	first_ri = md->pmd_classdep[PMC_MDEP_CLASS_INDEX_K8].pcd_ri;
+	first_ri = md->pmd_classdep[PMC_MDEP_CLASS_INDEX_AMD].pcd_ri;
 
 	KASSERT(pc != NULL, ("[amd,%d] NULL per-cpu pointer", __LINE__));
 
@@ -1273,6 +1326,7 @@ amd_pcpu_fini(struct pmc_mdep *md, int cpu)
 	struct amd_cpu *pac;
 	struct pmc_cpu *pc;
 	int first_ri, i;
+	u_int ch, pkg;
 
 	KASSERT(cpu >= 0 && cpu < pmc_cpu_max(),
 	    ("[amd,%d] insane cpu number (%d)", __LINE__, cpu));
@@ -1308,7 +1362,7 @@ amd_pcpu_fini(struct pmc_mdep *md, int cpu)
 	pc = pmc_pcpu[cpu];
 	KASSERT(pc != NULL, ("[amd,%d] NULL per-cpu state", __LINE__));
 
-	first_ri = md->pmd_classdep[PMC_MDEP_CLASS_INDEX_K8].pcd_ri;
+	first_ri = md->pmd_classdep[PMC_MDEP_CLASS_INDEX_AMD].pcd_ri;
 
 	/*
 	 * Reset pointers in the MI 'per-cpu' state.
@@ -1316,6 +1370,17 @@ amd_pcpu_fini(struct pmc_mdep *md, int cpu)
 	for (i = 0; i < amd_npmcs; i++)
 		pc->pc_hwpmcs[i + first_ri] = NULL;
 
+	if (amd_umc_gate_evsel != NULL) {
+		pkg = amd_umc_pkg_of(cpu);
+		KASSERT(atomic_load_acq_int(
+		    &amd_umc_gate_refcnt[pkg]) >= 1,
+		    ("[amd,%d] UMC gate refcnt underflow pkg %u",
+		    __LINE__, pkg));
+		if (atomic_fetchadd_int(&amd_umc_gate_refcnt[pkg], -1) == 1) {
+			for (ch = 0; ch < amd_umc_nchannels; ch++)
+				wrmsr(amd_umc_gate_evsel[ch], 0);
+		}
+	}
 	free(pac->pc_amdpmcs, M_PMC);
 	free(pac, M_PMC);
 	return (0);
@@ -1334,6 +1399,16 @@ amd_v2_hwcheck_cpu(void *arg)
 	int error, i;
 
 	state = arg;
+
+	/*
+	 * A buggy hypervisor can advertise the PerfMonV2 CPUID bit without
+	 * implementing GLOBAL_CTL.
+	 */
+	if (rdmsr_safe(AMD_PMC_GLOBAL_CTL, &reg) != 0) {
+		atomic_set_int(&state->avh_read_error, 1);
+		return;
+	}
+
 	for (i = 0; i < amd_core_npmcs; i++) {
 		error = rdmsr_safe(amd_pmcdesc[i].pm_evsel, &reg);
 		if (error != 0) {
@@ -1364,7 +1439,7 @@ amd_hwcheck(void)
 		smp_rendezvous_cpus(all_cpus, smp_no_rendezvous_barrier,
 		    amd_v2_hwcheck_cpu, smp_no_rendezvous_barrier, &state);
 		if (state.avh_read_error != 0) {
-			printf("hwpmc: AMD PerfMonV2 EVSEL read failed on one "
+			printf("hwpmc: AMD PerfMonV2 MSR read failed on one "
 			    "or more CPUs!\n");
 			return (-1);
 		}
@@ -1434,6 +1509,43 @@ amd_hwcheck(void)
 }
 
 /*
+ * UMC perfmon registers are clock-gated when no counter in the channel is
+ * enabled.  Reserve the last slot of each channel and keep it enabled with
+ * EventSelect=0 so writes to the other slots take effect.  Assumes all
+ * sockets have the same UMC layout as the boot CPU.
+ */
+static void
+pmc_amd_initialize_umc(int pmcs_per_umc)
+{
+	u_int c, max_pkg, pkg;
+
+	if (amd_umc_npmcs == 0 || pmcs_per_umc < 2)
+		return;
+
+	amd_umc_nchannels = amd_umc_npmcs / pmcs_per_umc;
+	amd_umc_pkg_shift = (cpu_procinfo2 & AMDID_COREID_SIZE) >>
+	    AMDID_COREID_SIZE_SHIFT;
+
+	max_pkg = 0;
+	CPU_FOREACH(c) {
+		pkg = amd_umc_pkg_of(c);
+		if (pkg > max_pkg)
+			max_pkg = pkg;
+	}
+	amd_umc_npkgs = max_pkg + 1;
+
+	amd_umc_gate_evsel = mallocarray(amd_umc_nchannels,
+	    sizeof(*amd_umc_gate_evsel), M_PMC, M_WAITOK | M_ZERO);
+	amd_umc_gate_refcnt = mallocarray(amd_umc_npkgs,
+	    sizeof(*amd_umc_gate_refcnt), M_PMC, M_WAITOK | M_ZERO);
+	for (c = 0; c < amd_umc_nchannels; c++)
+		amd_umc_gate_evsel[c] = AMD_PMC_UMC_BASE +
+		    2 * (c * pmcs_per_umc + (pmcs_per_umc - 1));
+
+	amd_umc_npmcs -= amd_umc_nchannels;
+}
+
+/*
  * Initialize ourselves.
  */
 struct pmc_mdep *
@@ -1445,6 +1557,7 @@ pmc_amd_initialize(void)
 	struct pmc_mdep *pmc_mdep;
 	enum pmc_cputype cputype;
 	int ncpus, nclasses, i;
+	int ch, hw, j, per;
 	int family, model, stepping;
 	int npmcs_total;
 	int error;
@@ -1504,8 +1617,12 @@ pmc_amd_initialize(void)
 			pmcs_per_umc = amd_umc_npmcs / popcntq(regs[2]);
 		}
 
-		/* EAX bit 0 holds the PerfMonV2 flag. */
-		if (EXTPERFMON_PERFMONV2(regs[0]) && family >= 0x19)
+		/*
+		 * EAX bit 0 holds the PerfMonV2 flag.  PerfMonV2 requires
+		 * PerfCtrExtCore; reject inconsistent CPUID (e.g. bhyve).
+		 */
+		if (EXTPERFMON_PERFMONV2(regs[0]) && family >= 0x19 &&
+		    (amd_feature2 & AMDID2_PCXC) != 0)
 			amd_perfmon_v2 = true;
 	}
 
@@ -1519,6 +1636,9 @@ pmc_amd_initialize(void)
 		amd_l3_npmcs = 0;
 	if ((amd_feature2 & AMDID2_PNXC) == 0)
 		amd_df_npmcs = 0;
+
+	pmc_amd_initialize_umc(pmcs_per_umc);
+
 	npmcs_total = amd_core_npmcs + amd_l3_npmcs + amd_df_npmcs +
 	    amd_umc_npmcs;
 	KASSERT(npmcs_total <= AMD_NPMCS_MAX,
@@ -1531,8 +1651,8 @@ pmc_amd_initialize(void)
 	for (i = 0; i < amd_core_npmcs; i++) {
 		d = &amd_pmcdesc[i];
 		snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
-		    "K8-%d", i);
-		d->pm_descr.pd_class = PMC_CLASS_K8;
+		    "AMD-%d", i);
+		d->pm_descr.pd_class = PMC_CLASS_AMD;
 		d->pm_descr.pd_caps = AMD_PMC_CAPS;
 		/*
 		 * Zen 5 can precisely count retire events.
@@ -1562,8 +1682,8 @@ pmc_amd_initialize(void)
 		for (i = 0; i < amd_l3_npmcs; i++) {
 			d = &amd_pmcdesc[amd_npmcs + i];
 			snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
-			    "K8-L3-%d", i);
-			d->pm_descr.pd_class = PMC_CLASS_K8;
+			    "AMD-L3-%d", i);
+			d->pm_descr.pd_class = PMC_CLASS_AMD;
 			d->pm_descr.pd_caps = AMD_PMC_L3_CAPS;
 			d->pm_descr.pd_width = 48;
 			d->pm_evsel = AMD_PMC_L3_BASE + 2 * i;
@@ -1578,8 +1698,8 @@ pmc_amd_initialize(void)
 		for (i = 0; i < amd_df_npmcs; i++) {
 			d = &amd_pmcdesc[amd_npmcs + i];
 			snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
-			    "K8-DF-%d", i);
-			d->pm_descr.pd_class = PMC_CLASS_K8;
+			    "AMD-DF-%d", i);
+			d->pm_descr.pd_class = PMC_CLASS_AMD;
 			d->pm_descr.pd_caps = AMD_PMC_DF_CAPS;
 			d->pm_descr.pd_width = 48;
 			d->pm_evsel = AMD_PMC_DF_BASE + 2 * i;
@@ -1592,16 +1712,24 @@ pmc_amd_initialize(void)
 	KASSERT(amd_npmcs == npmcs_total - amd_umc_npmcs,
 	    ("%s: UMC cursor wrong: got %d expected %d",
 	    __func__, amd_npmcs, npmcs_total - amd_umc_npmcs));
-	for (i = 0; i < amd_umc_npmcs; i++) {
-		d = &amd_pmcdesc[amd_npmcs + i];
-		snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
-		    "K8-UMC%d-%d", i / pmcs_per_umc, i);
-		d->pm_descr.pd_class = PMC_CLASS_K8;
-		d->pm_descr.pd_caps = AMD_PMC_UMC_CAPS;
-		d->pm_descr.pd_width = 48;
-		d->pm_evsel = AMD_PMC_UMC_BASE + 2 * i;
-		d->pm_perfctr = AMD_PMC_UMC_BASE + 2 * i + 1;
-		d->pm_subclass = PMC_AMD_SUB_CLASS_UMC;
+	/*
+	 * Expose 'per' counters for each UMC channel.  When the clock gate
+	 * is armed, the last hardware slot of every channel is reserved.
+	 */
+	per = amd_umc_gate_evsel != NULL ? pmcs_per_umc - 1 : pmcs_per_umc;
+	for (ch = 0, i = 0; i < amd_umc_npmcs; ch++) {
+		for (j = 0; j < per && i < amd_umc_npmcs; j++, i++) {
+			hw = ch * pmcs_per_umc + j;
+			d = &amd_pmcdesc[amd_npmcs + i];
+			snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
+			    "AMD-UMC%d-%d", ch, i);
+			d->pm_descr.pd_class = PMC_CLASS_AMD;
+			d->pm_descr.pd_caps = AMD_PMC_UMC_CAPS;
+			d->pm_descr.pd_width = 48;
+			d->pm_evsel = AMD_PMC_UMC_BASE + 2 * hw;
+			d->pm_perfctr = AMD_PMC_UMC_BASE + 2 * hw + 1;
+			d->pm_subclass = PMC_AMD_SUB_CLASS_UMC;
+		}
 	}
 	amd_npmcs += amd_umc_npmcs;
 
@@ -1643,8 +1771,21 @@ pmc_amd_initialize(void)
 	 * cpu_startup() -> startrtclock()), not by hwpmc's TSC PMC class. It is
 	 * set only after confirming both MSRs actually increment (some emulators
 	 * expose the CPUID bit without real MSR support).
+	 *
+	 * Separately, detect support for the IRPERF MSR (AMD-only). If the
+	 * feature is present, HWCR_IRPERFEN should already be set in MSR_HWCR
+	 * by initializecpu() at boot, which also accounts for erratum #1054
+	 * (IRPERF is left disabled on affected Zen 1 parts) and verifies IRPERF
+	 * is actually incrementing on a dead/emulated MSR. This code only reads
+	 * back that already-decided state.
+	 *
+	 * Either condition above causes the PERF class to be registered, so at
+	 * least one of MPERF/APERF or IRPERF is expected to be usable when this
+	 * branch is taken.
 	 */
-	if ((cpu_power_ecx & CPUID_PERF_STAT) && (tsc_perf_stat == 1)) {
+	if (((cpu_power_ecx & CPUID_PERF_STAT) && (tsc_perf_stat == 1)) ||
+	    ((amd_extended_feature_extensions & AMDFEID_IRPERF) &&
+	    (rdmsr(MSR_HWCR) & HWCR_IRPERFEN))) {
 		nclasses++;
 	}
 
@@ -1657,11 +1798,11 @@ pmc_amd_initialize(void)
 	if (error != 0)
 		goto error;
 
-	/* Initialize AMD K8 PMC handling. */
-	pcd = &pmc_mdep->pmd_classdep[PMC_MDEP_CLASS_INDEX_K8];
+	/* Initialize AMD PMC handling. */
+	pcd = &pmc_mdep->pmd_classdep[PMC_MDEP_CLASS_INDEX_AMD];
 
 	pcd->pcd_caps		= AMD_PMC_CAPS;
-	pcd->pcd_class		= PMC_CLASS_K8;
+	pcd->pcd_class		= PMC_CLASS_AMD;
 	pcd->pcd_num		= amd_npmcs;
 	pcd->pcd_ri		= pmc_mdep->pmd_npmc;
 	pcd->pcd_width		= 48;
@@ -1720,6 +1861,13 @@ error:
 	free(pmc_mdep, M_PMC);
 	free(amd_pcpu, M_PMC);
 	amd_pcpu = NULL;
+	free(amd_umc_gate_refcnt, M_PMC);
+	amd_umc_gate_refcnt = NULL;
+	free(amd_umc_gate_evsel, M_PMC);
+	amd_umc_gate_evsel = NULL;
+	amd_umc_nchannels = 0;
+	amd_umc_npkgs = 0;
+	amd_umc_pkg_shift = 0;
 	free(amd_pmcdesc, M_PMC);
 	amd_pmcdesc = NULL;
 	amd_npmcs = 0;
@@ -1749,6 +1897,14 @@ pmc_amd_finalize(struct pmc_mdep *md)
 
 	free(amd_pcpu, M_PMC);
 	amd_pcpu = NULL;
+
+	free(amd_umc_gate_refcnt, M_PMC);
+	amd_umc_gate_refcnt = NULL;
+	free(amd_umc_gate_evsel, M_PMC);
+	amd_umc_gate_evsel = NULL;
+	amd_umc_nchannels = 0;
+	amd_umc_npkgs = 0;
+	amd_umc_pkg_shift = 0;
 
 	free(amd_pmcdesc, M_PMC);
 	amd_pmcdesc = NULL;

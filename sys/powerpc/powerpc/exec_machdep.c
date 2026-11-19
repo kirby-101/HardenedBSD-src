@@ -125,7 +125,8 @@ static int	grab_mcontext(struct thread *, mcontext_t *, int);
 static void	cleanup_power_extras(struct thread *);
 
 #ifdef __powerpc64__
-extern struct sysentvec elf64_freebsd_sysvec_v2;
+extern struct sysentvec elf64_freebsd_sysvec_v2_la48;
+extern struct sysentvec elf64_freebsd_sysvec_v2_la52;
 #endif
 
 #ifdef __powerpc64__
@@ -210,11 +211,7 @@ sendsig(sig_t catcher, ksiginfo_t *ksi, sigset_t *mask)
 		sfp = (caddr_t)&sf;
 		sfpsize = sizeof(sf);
 		#ifdef __powerpc64__
-		/*
-		 * 64-bit PPC defines a 512 byte red zone below
-		 * the existing stack (ELF ABI v2 §2.2.2.4)
-		 */
-		rndfsize = 512 + roundup(sizeof(sf), 48);
+		rndfsize = roundup(sizeof(sf), 48);
 		#else
 		rndfsize = roundup(sizeof(sf), 16);
 		#endif
@@ -249,6 +246,14 @@ sendsig(sig_t catcher, ksiginfo_t *ksi, sigset_t *mask)
 		usfp = (void *)(((uintptr_t)td->td_sigstk.ss_sp +
 		   td->td_sigstk.ss_size - rndfsize) & ~0xFul);
 	} else {
+		#ifdef __powerpc64__
+		/*
+		 * 64-bit PPC defines a 512 byte red zone below
+		 * the existing stack (ELF ABI v2 §2.2.2.4)
+		 */
+		if (!SV_PROC_FLAG(p, SV_ILP32))
+			sp -= 512;
+		#endif
 		usfp = (void *)((sp - rndfsize) & ~0xFul);
 	}
 
@@ -411,7 +416,7 @@ grab_mcontext(struct thread *td, mcontext_t *mcp, int flags)
 			KASSERT(td == curthread,
 				("get_mcontext: fp save not curthread"));
 			critical_enter();
-			save_fpu(td);
+			save_fpu_nodrop(td);
 			critical_exit();
 		}
 		mcp->mc_flags |= _MC_FP_VALID;
@@ -419,13 +424,21 @@ grab_mcontext(struct thread *td, mcontext_t *mcp, int flags)
 		for (i = 0; i < 32; i++)
 			memcpy(&mcp->mc_fpreg[i], &pcb->pcb_fpu.fpr[i].fpr,
 			    sizeof(double));
-	}
 
-	if (pcb->pcb_flags & PCB_VSX) {
-		mcp->mc_flags |= _MC_VS_VALID;
-		for (i = 0; i < 32; i++)
-			memcpy(&mcp->mc_vsxfpreg[i],
-			    &pcb->pcb_fpu.fpr[i].vsr[2], sizeof(double));
+		/*
+		 * The second halves of VSR0-31 in the PCB are current
+		 * whenever the FP state is: VSX instructions cannot run
+		 * without PCB_VSX, and save_fpu() stores them when it is
+		 * set.  Export them regardless of whether the thread owns
+		 * VSX at this moment, or a signal delivered right after a
+		 * sigreturn loses them.
+		 */
+		if (cpu_features & PPC_FEATURE_HAS_VSX) {
+			mcp->mc_flags |= _MC_VS_VALID;
+			for (i = 0; i < 32; i++)
+				memcpy(&mcp->mc_vsxfpreg[i],
+				    &pcb->pcb_fpu.fpr[i].vsr[2], sizeof(double));
+		}
 	}
 
 	/*
@@ -437,7 +450,7 @@ grab_mcontext(struct thread *td, mcontext_t *mcp, int flags)
 			KASSERT(td == curthread,
 				("get_mcontext: altivec save not curthread"));
 			critical_enter();
-			save_vec(td);
+			save_vec_nodrop(td);
 			critical_exit();
 		}
 		mcp->mc_flags |= _MC_AV_VALID;
@@ -519,7 +532,14 @@ set_mcontext(struct thread *td, mcontext_t *mcp)
 	 *
 	 * Additionally, ensure VSX is disabled as well, as it is illegal
 	 * to leave it turned on when FP or VEC are off.
+	 *
+	 * The MSR bits in the frame and the PCB flags must change together:
+	 * if the thread is switched out in between, cpu_switchin() still
+	 * sees the flags, reloads the registers and puts the MSR bits back
+	 * into the frame, and the thread then runs with the units enabled
+	 * but without owning them.
 	 */
+	critical_enter();
 	tf->srr1 &= ~(PSL_FP | PSL_VSX | PSL_VEC);
 	pcb->pcb_flags &= ~(PCB_FPU | PCB_VSX | PCB_VEC);
 
@@ -533,7 +553,6 @@ set_mcontext(struct thread *td, mcontext_t *mcp)
 	 * sigresume is callled will used by the resumed thread, instead of the
 	 * previously saved data from the mcontext.
 	 */
-	critical_enter();
 	msr = mfmsr() & ~(PSL_FP | PSL_VSX | PSL_VEC);
 	isync();
 	mtmsr(msr);
@@ -1183,7 +1202,8 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 		#endif
 	} else {
 	    #ifdef __powerpc64__
-		if (td->td_proc->p_sysent == &elf64_freebsd_sysvec_v2) {
+		if (td->td_proc->p_sysent == &elf64_freebsd_sysvec_v2_la48 ||
+		    td->td_proc->p_sysent == &elf64_freebsd_sysvec_v2_la52) {
 			tf->srr0 = (register_t)entry;
 			/* ELFv2 ABI requires that the global entry point be in r12. */
 			tf->fixreg[12] = (register_t)entry;

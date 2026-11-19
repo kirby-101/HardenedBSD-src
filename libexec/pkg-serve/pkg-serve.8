@@ -2,7 +2,7 @@
 .\"
 .\" SPDX-License-Identifier: BSD-2-Clause
 .\"
-.Dd March 17, 2026
+.Dd November 17, 2026
 .Dt PKG-SERVE 8
 .Os
 .Sh NAME
@@ -32,6 +32,9 @@ enters a Capsicum sandbox, restricting filesystem access to
 .Ar basedir .
 .Sh PROTOCOL
 The protocol is line-oriented.
+Command lines are limited to 4096 bytes; a longer line is discarded and
+answered with
+.Dq Li "ko: command too long" .
 Upon connection, the server sends a greeting:
 .Bd -literal -offset indent
 ok: pkg-serve <version>
@@ -100,8 +103,8 @@ as
 the above configuration will serve files from
 .Pa /usr/local/poudriere/data/packages/myrepo/ .
 .Sh SEE ALSO
-.Xr inetd 8 ,
 .Xr inetd.conf 5 ,
+.Xr inetd 8 ,
 .Xr pkg 8
 .Sh AUTHORS
 .An Baptiste Daroussin Aq Mt bapt@FreeBSD.org

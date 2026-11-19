@@ -129,9 +129,9 @@ struct nfsclwritedsdorpc {
 
 static int nfsrpc_setattrrpc(vnode_t , struct vattr *, nfsv4stateid_t *,
     struct ucred *, NFSPROC_T *, struct nfsvattr *, int *);
-static int nfsrpc_readrpc(vnode_t , struct uio *, struct ucred *,
+static int nfsrpc_readrpc(vnode_t , struct uio *, vm_page_t *, struct ucred *,
     nfsv4stateid_t *, NFSPROC_T *, struct nfsvattr *, int *);
-static int nfsrpc_writerpc(vnode_t , struct uio *, int *, int *,
+static int nfsrpc_writerpc(vnode_t , struct uio *, vm_page_t *, int *, int *,
     struct ucred *, nfsv4stateid_t *, NFSPROC_T *, struct nfsvattr *, int *,
     int);
 static int nfsrpc_deallocaterpc(vnode_t, off_t, off_t, nfsv4stateid_t *,
@@ -237,8 +237,8 @@ static int nfsrpc_seekrpc(vnode_t, off_t *, nfsv4stateid_t *, bool *,
     int, struct nfsvattr *, int *, struct ucred *);
 static struct mbuf *nfsm_split(struct mbuf *, uint64_t);
 static void nfscl_statfs(struct vnode *, struct ucred *, NFSPROC_T *);
-static struct mbuf *nfsm_build_rdma_reduction(struct nfsrv_descript *nd,
-    int len, int pos, bool to_mem);
+static struct mbuf *nfsm_build_rdma_reduction(vm_page_t *pgp,
+    struct nfsrv_descript *nd, int len, int pos, bool to_mem);
 
 int nfs_pnfsio(task_fn_t *, void *);
 
@@ -1069,12 +1069,15 @@ nfsrpc_setclient(struct nfsmount *nmp, struct nfsclclient *clp, int reclaim,
 				nfscl_freenfsclds(dsp);
 				dsp = NULL;
 				/*
-				 * If *retokp is true, return any error other
-				 * than NFSERR_STALECLIENTID,
+				 * A stale ClientID needs a full recovery.
+				 * Otherwise, if *retokp is true, return any
+				 * error other than NFSERR_STALECLIENTID,
 				 * NFSERR_BADSESSION or NFSERR_STALEDONTRECOVER
 				 * so that nfscl_recover() will not loop.
 				 */
-				if (*retokp)
+				if (error == NFSERR_STALECLIENTID)
+					*retokp = false;
+				else if (*retokp)
 					return (NFSERR_IO);
 			} else
 				*retokp = true;
@@ -1750,7 +1753,7 @@ nfsmout:
  * Read operation.
  */
 int
-nfsrpc_read(vnode_t vp, struct uio *uiop, struct ucred *cred,
+nfsrpc_read(vnode_t vp, struct uio *uiop, vm_page_t *pgp, struct ucred *cred,
     NFSPROC_T *p, struct nfsvattr *nap, int *attrflagp)
 {
 	int error, expireret = 0, retrycnt;
@@ -1776,7 +1779,9 @@ nfsrpc_read(vnode_t vp, struct uio *uiop, struct ucred *cred,
 			(void)nfscl_getstateid(vp, nfhp->nfh_fh, nfhp->nfh_len,
 			    NFSV4OPEN_ACCESSREAD, 0, newcred, p, &stateid,
 			    &lckp);
-		error = nfsrpc_readrpc(vp, uiop, newcred, &stateid, p, nap,
+		if (retrycnt > 0)
+			pgp = NULL;
+		error = nfsrpc_readrpc(vp, uiop, pgp, newcred, &stateid, p, nap,
 		    attrflagp);
 		if (error == NFSERR_OPENMODE) {
 			NFSLOCKMNT(nmp);
@@ -1818,7 +1823,7 @@ nfsrpc_read(vnode_t vp, struct uio *uiop, struct ucred *cred,
  * The actual read RPC.
  */
 static int
-nfsrpc_readrpc(vnode_t vp, struct uio *uiop, struct ucred *cred,
+nfsrpc_readrpc(vnode_t vp, struct uio *uiop, vm_page_t *pgp, struct ucred *cred,
     nfsv4stateid_t *stateidp, NFSPROC_T *p, struct nfsvattr *nap,
     int *attrflagp)
 {
@@ -1829,25 +1834,11 @@ nfsrpc_readrpc(vnode_t vp, struct uio *uiop, struct ucred *cred,
 	struct nfsmount *nmp = VFSTONFS(vp->v_mount);
 	struct nfsrv_descript *nd = &nfsd;
 	int rsize;
-	off_t tmp_off;
+	off_t tmp_off, start_off;
 	bool did_rdma, reduced;
 
 	*attrflagp = 0;
 	tsiz = uiop->uio_resid;
-	did_rdma = false;
-	mbflag = 0;
-	if (NFSHASRDMA(nmp) && tsiz > 0) {
-		/* Assume the rest of the RPC without data is <= 1024 bytes. */
-		if ((uiop->uio_offset & PAGE_MASK) == 0 &&
-		    uiop->uio_segflg == UIO_SYSSPACE)
-			did_rdma = true;
-		else if (tsiz <= PAGE_SIZE - 1024)
-			mbflag = M_PROTO7;
-		else if (tsiz <= NFS_DIRBLKSIZ + PAGE_SIZE - 1024)
-			mbflag = M_PROTO8;
-		else
-			mbflag = M_PROTO9;
-	}
 	tmp_off = uiop->uio_offset + tsiz;
 	NFSLOCKMNT(nmp);
 	if (tmp_off > nmp->nm_maxfilesize || tmp_off < uiop->uio_offset) {
@@ -1857,10 +1848,32 @@ nfsrpc_readrpc(vnode_t vp, struct uio *uiop, struct ucred *cred,
 	rsize = nmp->nm_rsize;
 	NFSUNLOCKMNT(nmp);
 	nd->nd_mrep = NULL;
-	mr = NULL;
+	start_off = uiop->uio_offset;
 	while (tsiz > 0) {
+		mr = NULL;
 		*attrflagp = 0;
 		len = (tsiz > rsize) ? rsize : tsiz;
+		did_rdma = false;
+		mbflag = 0;
+		if (NFSHASRDMA(nmp) && len > 0) {
+			/*
+			 * Until nfsm_build_rdma_reduction() handles an offset
+			 * within the pages, this can only be done for the first
+			 * iteration.
+			 */
+			tmp_off = uiop->uio_offset - start_off;
+			if (pgp != NULL && (tmp_off & PAGE_MASK) == 0 &&
+			    (start_off & PAGE_MASK) == 0 &&
+			    uiop->uio_segflg == UIO_SYSSPACE &&
+			    !NFSHASNOREADREDUCE(nmp))
+				did_rdma = true;
+			else if (len <= PAGE_SIZE - 1024)
+				mbflag = M_PROTO7;
+			else if (len <= NFS_DIRBLKSIZ + PAGE_SIZE - 1024)
+				mbflag = M_PROTO8;
+			else
+				mbflag = M_PROTO9;
+		}
 		NFSCL_REQSTART(nd, NFSPROC_READ, vp, cred);
 		nd->nd_mreq->m_flags |= mbflag;
 		if (nd->nd_flag & ND_NFSV4)
@@ -1876,18 +1889,16 @@ nfsrpc_readrpc(vnode_t vp, struct uio *uiop, struct ucred *cred,
 		}
 		/* For RDMA, make the data a separate chunk. */
 		if (did_rdma)
-			mr = nfsm_build_rdma_reduction(nd, len, 0, true);
+			mr = nfsm_build_rdma_reduction(&pgp[tmp_off/PAGE_SIZE],
+			    nd, len, 0, true);
 		/*
 		 * Since I can't do a Getattr for NFSv4 for Write, there
 		 * doesn't seem any point in doing one here, either.
 		 * (See the comment in nfsrpc_writerpc() for more info.)
 		 */
 		error = nfscl_request(nd, vp, p, cred);
-		if (error) {
-			if (mr != NULL)
-				rpc_free_rdma_reduction(mr);
+		if (error)
 			return (error);
-		}
 		reduced = false;
 		if ((nd->nd_mrep->m_flags & M_PROTO6) != 0)
 			reduced = true;
@@ -1912,16 +1923,20 @@ nfsrpc_readrpc(vnode_t vp, struct uio *uiop, struct ucred *cred,
 		}
 		NFSM_STRSIZ(retlen, len);
 		if (retlen > 0) {
+			/*
+			 * Since nfsm_build_rdma_reduction() didn't allocate
+			 * pages, the call to rpc_copy_uio_pages() only
+			 * updates the uiop fields.  It does not copy data.
+			 */
 			if (!did_rdma || !reduced)
 				error = nfsm_mbufuio(nd, uiop, retlen);
 			else
 				error = rpc_copy_uio_pages(mr, uiop, retlen,
 				    true);
 		}
-		if (mr != NULL) {
-			rpc_free_rdma_reduction(mr);
-			mr = NULL;
-		}
+		if (mr != NULL)
+			m_free(mr);
+		mr = NULL;
 		if (error)
 			goto nfsmout;
 		m_freem(nd->nd_mrep);
@@ -1936,7 +1951,7 @@ nfsrpc_readrpc(vnode_t vp, struct uio *uiop, struct ucred *cred,
 	return (0);
 nfsmout:
 	if (mr != NULL)
-		rpc_free_rdma_reduction(mr);
+		m_free(mr);
 	if (nd->nd_mrep != NULL)
 		m_freem(nd->nd_mrep);
 	return (error);
@@ -1951,9 +1966,9 @@ nfsmout:
  * will then deadlock.
  */
 int
-nfsrpc_write(vnode_t vp, struct uio *uiop, int *iomode, int *must_commit,
-    struct ucred *cred, NFSPROC_T *p, struct nfsvattr *nap, int *attrflagp,
-    int called_from_strategy, int ioflag)
+nfsrpc_write(vnode_t vp, struct uio *uiop, vm_page_t *pgp, int *iomode,
+    int *must_commit, struct ucred *cred, NFSPROC_T *p, struct nfsvattr *nap,
+    int *attrflagp, int called_from_strategy, int ioflag)
 {
 	int error, expireret = 0, retrycnt, nostateid;
 	u_int32_t clidrev = 0;
@@ -1988,6 +2003,8 @@ nfsrpc_write(vnode_t vp, struct uio *uiop, int *iomode, int *must_commit,
 			}
 		}
 
+		if (retrycnt > 0)
+			pgp = NULL;
 		/*
 		 * If there is no stateid for NFSv4, it means this is an
 		 * extraneous write after close. Basically a poorly
@@ -1996,8 +2013,9 @@ nfsrpc_write(vnode_t vp, struct uio *uiop, int *iomode, int *must_commit,
 		if (nostateid)
 			error = 0;
 		else
-			error = nfsrpc_writerpc(vp, uiop, iomode, must_commit,
-			    newcred, &stateid, p, nap, attrflagp, ioflag);
+			error = nfsrpc_writerpc(vp, uiop, pgp, iomode,
+			    must_commit, newcred, &stateid, p, nap, attrflagp,
+			    ioflag);
 		if (error == NFSERR_STALESTATEID)
 			nfscl_initiate_recovery(nmp->nm_clp);
 		if (lckp != NULL)
@@ -2034,7 +2052,7 @@ nfsrpc_write(vnode_t vp, struct uio *uiop, int *iomode, int *must_commit,
  * The actual write RPC.
  */
 static int
-nfsrpc_writerpc(vnode_t vp, struct uio *uiop, int *iomode,
+nfsrpc_writerpc(vnode_t vp, struct uio *uiop, vm_page_t *pgp, int *iomode,
     int *must_commit, struct ucred *cred, nfsv4stateid_t *stateidp,
     NFSPROC_T *p, struct nfsvattr *nap, int *attrflagp, int ioflag)
 {
@@ -2049,13 +2067,14 @@ nfsrpc_writerpc(vnode_t vp, struct uio *uiop, int *iomode,
 	nfsattrbit_t attrbits;
 	uint64_t tmp_off;
 	ssize_t tsiz, wsize;
-	bool do_append, did_rdma;
+	bool do_append, did_rdma, first_loop;
 
 	KASSERT(uiop->uio_iovcnt == 1, ("nfs: writerpc iovcnt > 1"));
 	*attrflagp = 0;
 	tsiz = uiop->uio_resid;
 	did_rdma = false;
-	if (NFSHASRDMA(nmp) && (uiop->uio_offset & PAGE_MASK) == 0 &&
+	if (NFSHASRDMA(nmp) && !NFSHASNOWRITEREDUCE(nmp) && pgp != NULL &&
+	    (uiop->uio_offset & PAGE_MASK) == 0 &&
 	    uiop->uio_segflg == UIO_SYSSPACE)
 		did_rdma = true;
 	tmp_off = uiop->uio_offset + tsiz;
@@ -2072,8 +2091,9 @@ nfsrpc_writerpc(vnode_t vp, struct uio *uiop, int *iomode,
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK);
 	nd->nd_mrep = NULL;	/* NFSv2 sometimes does a write with */
 	nd->nd_repstat = 0;	/* uio_resid == 0, so the while is not done */
-	mr = NULL;
+	first_loop = true;
 	while (tsiz > 0) {
+		mr = NULL;
 		*attrflagp = 0;
 		len = (tsiz > wsize) ? wsize : tsiz;
 		if (do_append)
@@ -2123,18 +2143,22 @@ nfsrpc_writerpc(vnode_t vp, struct uio *uiop, int *iomode,
 			*tl = x;        /* size of this write */
 		}
 		/* For RDMA, make the data a separate chunk. */
-		if (did_rdma && !NFSHASNOWRITEREDUCE(nmp)) {
+		if (did_rdma && first_loop) {
 			rlen = m_length(nd->nd_mreq, NULL);
-			mr = nfsm_build_rdma_reduction(nd, len, rlen, false);
+			mr = nfsm_build_rdma_reduction(pgp, nd, len, rlen,
+			    false);
+			/*
+			 * Since nfsm_build_rdma_reduction() didn't allocate
+			 * pages, the call to rpc_copy_uio_pages() only
+			 * updates the uiop fields.  It does not copy data.
+			 */
 			error = rpc_copy_uio_pages(mr, uiop, len, false);
-			if (error != 0) {
-				rpc_free_rdma_reduction(mr);
-				mr = NULL;
-			}
 		} else {
 			error = nfsm_uiombuf(nd, uiop, len);
 		}
+		first_loop = false;
 		if (error != 0) {
+			nfsv4_freeunsentslot(nmp, NULL, nd);
 			m_freem(nd->nd_mreq);
 			free(nd, M_TEMP);
 			return (error);
@@ -2167,15 +2191,11 @@ nfsrpc_writerpc(vnode_t vp, struct uio *uiop, int *iomode,
 		}
 		error = nfscl_request(nd, vp, p, cred);
 		if (error) {
-			if (mr != NULL)
-				rpc_free_rdma_reduction(mr);
 			free(nd, M_TEMP);
 			return (error);
 		}
-		if (did_rdma && !NFSHASNOWRITEREDUCE(nmp)) {
-			KASSERT(mr != NULL, ("nfsrpc_writerpc: Null mr"));
-
-			rpc_free_rdma_reduction(mr);
+		if (mr != NULL) {
+			m_free(mr);
 			mr = NULL;
 		}
 		if (nd->nd_repstat) {
@@ -7373,6 +7393,7 @@ nfsrpc_writeds(vnode_t vp, struct uio *uiop, int *iomode, int *must_commit,
 	*tl = txdr_unsigned(len);
 	error = nfsm_uiombuf(nd, uiop, len);
 	if (error != 0) {
+		nfsv4_freeunsentslot(nmp, &dsp->nfsclds_sess, nd);
 		m_freem(nd->nd_mreq);
 		return (error);
 	}
@@ -9737,6 +9758,7 @@ nfsrpc_setextattr(vnode_t vp, const char *name, struct uio *uiop,
 	NFSCL_REQSTART(nd, NFSPROC_SETEXTATTR, vp, cred);
 	if (uiop->uio_resid > nd->nd_maxreq) {
 		/* nd_maxreq is set by NFSCL_REQSTART(). */
+		nfsv4_freeunsentslot(VFSTONFS(vp->v_mount), NULL, nd);
 		m_freem(nd->nd_mreq);
 		return (EINVAL);
 	}
@@ -9747,6 +9769,7 @@ nfsrpc_setextattr(vnode_t vp, const char *name, struct uio *uiop,
 	*tl = txdr_unsigned(uiop->uio_resid);
 	error = nfsm_uiombuf(nd, uiop, uiop->uio_resid);
 	if (error != 0) {
+		nfsv4_freeunsentslot(VFSTONFS(vp->v_mount), NULL, nd);
 		m_freem(nd->nd_mreq);
 		return (error);
 	}
@@ -10136,12 +10159,12 @@ nfscl_statfs(struct vnode *vp, struct ucred *cred, NFSPROC_T *td)
  * Set up the RDMA reduction mbuf in the build list.
  */
 static struct mbuf *
-nfsm_build_rdma_reduction(struct nfsrv_descript *nd, int len, int pos,
-    bool to_mem)
+nfsm_build_rdma_reduction(vm_page_t *pgp, struct nfsrv_descript *nd, int len,
+    int pos, bool to_mem)
 {
 	struct mbuf *m, *mr;
 
-	mr = rpc_reduce_pg(len, pos, to_mem);
+	mr = rpc_reduce_pg(pgp, len, pos, to_mem);
 	nd->nd_mb->m_next = mr;
 	nd->nd_mb = mr;
 	NFSMCLGET(m, M_NOWAIT);

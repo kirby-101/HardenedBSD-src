@@ -322,11 +322,11 @@ local function adduser(pwd)
 	if root then
 		cmd = cmd .. "-R " .. root .. " "
 	end
-	local f = io.popen(cmd .. " usershow " .. shell_escape(pwd.name) .. " -7 2> /dev/null")
+	local f = io.popen(cmd .. " usershow -n " .. shell_escape(pwd.name) .. " -7 2> /dev/null")
 	local pwdstr = f:read("*a")
 	f:close()
 	if pwdstr:len() ~= 0 then
-		return pwdstr:match("%a+:.+:%d+:%d+:.*:(.*):.*")
+		return pwdstr:match("[^:]*:[^:]*:%d+:%d+:[^:]*:([^:]*):")
 	end
 	if not pwd.gecos then
 		pwd.gecos = pwd.name .. " User"
@@ -355,6 +355,17 @@ local function adduser(pwd)
 	if pwd.primary_group and pwd.primary_group ~= pwd.name then
 		extraargs = extraargs .. " -g " .. shell_escape(pwd.primary_group)
 	end
+
+	-- explicitly specify an uid
+	if pwd.uid ~= nil then
+		local uid = math.tointeger(pwd.uid)
+		if not uid or uid < 0 then
+			warnmsg("invalid uid for user " .. pwd.name)
+			return nil
+		end
+		extraargs = extraargs .. " -u " .. tostring(uid)
+	end
+
 	if not pwd.no_create_home then
 		extraargs = extraargs .. " -m "
 	end

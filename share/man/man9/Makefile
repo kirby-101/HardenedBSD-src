@@ -335,6 +335,7 @@ MAN=	accept_filter.9 \
 	signal.9 \
 	sleep.9 \
 	sleepqueue.9 \
+	smp_rendezvous.9 \
 	smr.9 \
 	socket.9 \
 	stack.9 \
@@ -963,6 +964,7 @@ MLINKS+=cpuset.9 CPUSET_T_INITIALIZER.9 \
 	cpuset.9 CPU_EMPTY.9 \
 	cpuset.9 CPU_ISFULLSET.9 \
 	cpuset.9 CPU_FFS.9 \
+	cpuset.9 CPU_FFS_AT.9 \
 	cpuset.9 CPU_COUNT.9 \
 	cpuset.9 CPU_SUBSET.9 \
 	cpuset.9 CPU_OVERLAP.9 \

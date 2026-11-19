@@ -477,7 +477,7 @@ X_ip_mrouter_set(struct socket *so, struct sockopt *sopt)
 		} else {
 			error = sooptcopyin(sopt, &mfc, sizeof(struct mfcctl),
 			    sizeof(struct mfcctl));
-			bzero((caddr_t)&mfc + sizeof(struct mfcctl),
+			bzero((char *)&mfc + sizeof(struct mfcctl),
 			    sizeof(mfc) - sizeof(struct mfcctl));
 		}
 		if (error)
@@ -1088,7 +1088,7 @@ del_vif_locked(struct mfctable *mfct, vifi_t vifi,
 
 	mtx_destroy(&vifp->v_mtx);
 
-	bzero((caddr_t)vifp, sizeof (*vifp));
+	bzero(vifp, sizeof(*vifp));
 
 	CTR2(KTR_IPMF, "%s: delete vif %d", __func__, (int)vifi);
 
@@ -1460,7 +1460,7 @@ mfc_find_retry:
 
 	mb0 = m_copypacket(m, M_NOWAIT);
 	if (mb0 && (!M_WRITABLE(mb0) || mb0->m_len < hlen))
-		mb0 = m_pullup(mb0, hlen);
+		mb0 = m_copyup(mb0, hlen, 0);
 	if (mb0 == NULL) {
 		free(rte, M_MRTABLE);
 		MRW_WUNLOCK();
@@ -1688,7 +1688,7 @@ ip_mdq(struct mfctable *mfct, struct mbuf *m, struct ifnet *ifp, struct mfc *rt,
 				struct mbuf *mm = m_copym(m, 0, hlen, M_NOWAIT);
 
 				if (mm && (!M_WRITABLE(mm) || mm->m_len < hlen))
-					mm = m_pullup(mm, hlen);
+					mm = m_copyup(mm, hlen, 0);
 				if (mm == NULL)
 					return ENOBUFS;
 
@@ -1832,7 +1832,7 @@ phyint_send(struct ip *ip, struct vif *vifp, struct mbuf *m)
 	 */
 	mb_copy = m_copypacket(m, M_NOWAIT);
 	if (mb_copy && (!M_WRITABLE(mb_copy) || mb_copy->m_len < hlen))
-		mb_copy = m_pullup(mb_copy, hlen);
+		mb_copy = m_copyup(mb_copy, hlen, 0);
 	if (mb_copy == NULL)
 		return;
 
@@ -2286,10 +2286,10 @@ bw_upcalls_send(struct mfctable *mfct)
 		return;
 	}
 
-	m_copyback(m, 0, sizeof(struct igmpmsg), (caddr_t)&igmpmsg);
+	m_copyback(m, 0, sizeof(struct igmpmsg), &igmpmsg);
 	len += sizeof(struct igmpmsg);
 	while ((bu = buf_ring_dequeue_mc(mfct->bw_upcalls)) != NULL) {
-		m_copyback(m, len, sizeof(struct bw_upcall), (caddr_t)bu);
+		m_copyback(m, len, sizeof(struct bw_upcall), bu);
 		len += sizeof(struct bw_upcall);
 		free(bu, M_MRTABLE);
 	}
@@ -2538,7 +2538,7 @@ pim_register_send_rp(struct mfctable *mfct, struct ip *ip, struct vif *vifp,
 	if (ip->ip_off & htons(IP_DF))
 		ip_outer->ip_off |= htons(IP_DF);
 	ip_fillid(ip_outer, V_ip_random_id);
-	pimhdr = (struct pim_encap_pimhdr *)((caddr_t)ip_outer
+	pimhdr = (struct pim_encap_pimhdr *)((char *)ip_outer
 			+ sizeof(pim_encap_iphdr));
 	*pimhdr = pim_encap_pimhdr;
 	/* If the iif crosses a border, set the Border-bit */
@@ -2621,7 +2621,7 @@ pim_input(struct mbuf *m, int off, int proto, void *arg __unused)
 	 * Get the IP and PIM headers in contiguous memory, and
 	 * possibly the PIM REGISTER header.
 	 */
-	if (m->m_len < minlen && (m = m_pullup(m, minlen)) == NULL) {
+	if ((m = m_pullup(m, minlen)) == NULL) {
 		CTR1(KTR_IPMF, "%s: m_pullup() failed", __func__);
 		return (IPPROTO_DONE);
 	}

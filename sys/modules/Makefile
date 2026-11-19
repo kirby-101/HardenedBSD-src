@@ -256,7 +256,7 @@ SUBDIR=	\
 	${_mana} \
 	md \
 	mdio \
-	${_mgb} \
+	mgb \
 	mem \
 	mfi \
 	mii \
@@ -318,7 +318,7 @@ SUBDIR=	\
 	${_padlock} \
 	${_padlock_rng} \
 	${_pchtherm} \
-	${_pcfclock} \
+	pcfclock \
 	${_pf} \
 	${_pflog} \
 	${_pflow} \
@@ -779,7 +779,6 @@ _ixv=		ixv
 _lio=		lio
 .endif
 _mana=		mana
-_mgb=		mgb
 _nctgpio=	nctgpio
 _ncthwm=	ncthwm
 _ntb=		ntb
@@ -916,7 +915,6 @@ _3dfx=		3dfx
 _3dfx_linux=	3dfx_linux
 _glxiic=	glxiic
 _glxsb=		glxsb
-_pcfclock=	pcfclock
 _pst=		pst
 _sbni=		sbni
 .endif

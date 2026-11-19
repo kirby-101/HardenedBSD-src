@@ -120,10 +120,10 @@ reset_vm_el2_regs(void *vcpu)
 	 * Generate the guest MPIDR value. We only support 16 CPUs at affinity
 	 * level 0 to simplify the vgicv3 driver (see writing sgi1r_el1).
 	 */
-	cpu_aff = (vcpuid & 0xf) << MPIDR_AFF0_SHIFT |
-	    ((vcpuid >> 4) & 0xff) << MPIDR_AFF1_SHIFT |
-	    ((vcpuid >> 12) & 0xff) << MPIDR_AFF2_SHIFT |
-	    ((vcpuid >> 20) & 0xff) << MPIDR_AFF3_SHIFT;
+	cpu_aff = (vcpuid & 0xf) << MPIDR_Aff0_SHIFT |
+	    ((vcpuid >> 4) & 0xff) << MPIDR_Aff1_SHIFT |
+	    ((vcpuid >> 12) & 0xff) << MPIDR_Aff2_SHIFT |
+	    ((vcpuid >> 20) & 0xff) << MPIDR_Aff3_SHIFT;
 	*hypctx_sys_reg(el2ctx, HOST_VMPIDR_EL2) |= cpu_aff;
 
 	/* Use the same CPU identification information as the host */
@@ -511,30 +511,30 @@ reset_vm_el2_regs(void *vcpu)
 
 		/* FEAT_TLBIRANGE */
 		*hypctx_sys_reg(el2ctx, HOST_HFGITR_EL2) |=
-		    HFGITR_EL2_TLBIRVAALE1_TRAP |
-		    HFGITR_EL2_TLBIRVALE1_TRAP |
-		    HFGITR_EL2_TLBIRVAAE1_TRAP |
-		    HFGITR_EL2_TLBIRVAE1_TRAP |
-		    HFGITR_EL2_TLBIRVAALE1IS_TRAP |
-		    HFGITR_EL2_TLBIRVALE1IS_TRAP |
-		    HFGITR_EL2_TLBIRVAAE1IS_TRAP |
-		    HFGITR_EL2_TLBIRVAE1IS_TRAP;
+		    HFGITR_EL2_TLBIRVAALE1_NOTRAP |
+		    HFGITR_EL2_TLBIRVALE1_NOTRAP |
+		    HFGITR_EL2_TLBIRVAAE1_NOTRAP |
+		    HFGITR_EL2_TLBIRVAE1_NOTRAP |
+		    HFGITR_EL2_TLBIRVAALE1IS_NOTRAP |
+		    HFGITR_EL2_TLBIRVALE1IS_NOTRAP |
+		    HFGITR_EL2_TLBIRVAAE1IS_NOTRAP |
+		    HFGITR_EL2_TLBIRVAE1IS_NOTRAP;
 
 		/* FEAT_TLBIRANGE && FEAT_TLBIOS */
 		*hypctx_sys_reg(el2ctx, HOST_HFGITR_EL2) |=
-		    HFGITR_EL2_TLBIRVAALE1OS_TRAP |
-		    HFGITR_EL2_TLBIRVALE1OS_TRAP |
-		    HFGITR_EL2_TLBIRVAAE1OS_TRAP |
-		    HFGITR_EL2_TLBIRVAE1OS_TRAP;
+		    HFGITR_EL2_TLBIRVAALE1OS_NOTRAP |
+		    HFGITR_EL2_TLBIRVALE1OS_NOTRAP |
+		    HFGITR_EL2_TLBIRVAAE1OS_NOTRAP |
+		    HFGITR_EL2_TLBIRVAE1OS_NOTRAP;
 
 		/* FEAT_TLBIOS */
 		*hypctx_sys_reg(el2ctx, HOST_HFGITR_EL2) |=
-		    HFGITR_EL2_TLBIVAALE1OS_TRAP |
-		    HFGITR_EL2_TLBIVALE1OS_TRAP |
-		    HFGITR_EL2_TLBIVAAE1OS_TRAP |
-		    HFGITR_EL2_TLBIASIDE1OS_TRAP |
-		    HFGITR_EL2_TLBIVAE1OS_TRAP |
-		    HFGITR_EL2_TLBIVMALLE1OS_TRAP;
+		    HFGITR_EL2_TLBIVAALE1OS_NOTRAP |
+		    HFGITR_EL2_TLBIVALE1OS_NOTRAP |
+		    HFGITR_EL2_TLBIVAAE1OS_NOTRAP |
+		    HFGITR_EL2_TLBIASIDE1OS_NOTRAP |
+		    HFGITR_EL2_TLBIVAE1OS_NOTRAP |
+		    HFGITR_EL2_TLBIVMALLE1OS_NOTRAP;
 
 		/* FEAT_PAN2 */
 		*hypctx_sys_reg(el2ctx, HOST_HFGITR_EL2) |=

@@ -248,7 +248,6 @@ static void	pmc_post_callchain_callback(void);
 static void	pmc_process_allproc(struct pmc *pm);
 static void	pmc_process_csw_in(struct thread *td);
 static void	pmc_process_csw_out(struct thread *td);
-static void	pmc_process_csw_out_prepare(int cpu);
 static void	pmc_process_csw_start_all(int cpu);
 static void	pmc_process_csw_stop_all(int cpu);
 static void	pmc_process_exec(struct thread *td,
@@ -1449,38 +1448,10 @@ pmc_process_csw_stop_all(int cpu)
 	struct pmc_classdep *pcd;
 	u_int class;
 
-	pmc_process_csw_out_prepare(cpu);
-
 	for (class = 0; class < md->pmd_nclass; class++) {
 		pcd = &md->pmd_classdep[class];
 		if (pcd->pcd_stop_all != NULL)
 			(void)pcd->pcd_stop_all(cpu);
-	}
-}
-
-/*
- * Mark virtual PMCs stopped, before you close hardware gates.
- */
-static void
-pmc_process_csw_out_prepare(int cpu)
-{
-	struct pmc *pm;
-	struct pmc_classdep *pcd;
-	u_int class;
-	int adjri;
-
-	for (class = 0; class < md->pmd_nclass; class++) {
-		pcd = &md->pmd_classdep[class];
-		if (pcd->pcd_stop_all == NULL)
-			continue;
-		for (adjri = 0; adjri < pcd->pcd_num; adjri++) {
-			pm = NULL;
-			(void)pcd->pcd_get_config(cpu, adjri, &pm);
-			if (pm == NULL ||
-			    !PMC_IS_VIRTUAL_MODE(PMC_TO_MODE(pm)))
-				continue;
-			pm->pm_pcpu_state[cpu].pps_cpustate = 0;
-		}
 	}
 }
 
@@ -4396,6 +4367,12 @@ pmc_syscall_handler(struct thread *td, void *syscall_args)
 			break;
 
 		error = copyout(&pa, arg, sizeof(pa));
+		/*
+		 * The caller never learns the ID of an unpublished PMC; do
+		 * not leave it (and the row it holds) behind.
+		 */
+		if (error != 0)
+			(void)pmc_do_op_pmcrelease(pa.pm_pmcid);
 	}
 	break;
 
@@ -4494,7 +4471,7 @@ pmc_syscall_handler(struct thread *td, void *syscall_args)
 			break;
 		}
 
-		if ((error = (*pcd->pcd_get_msr)(adjri, &gm.pm_msr)) < 0)
+		if ((error = (*pcd->pcd_get_msr)(adjri, &gm.pm_msr)) != 0)
 			break;
 
 		if ((error = copyout(&gm, arg, sizeof(gm))) < 0)
@@ -5964,12 +5941,14 @@ pmc_cleanup(void)
 
 	PMCDBG0(MOD,INI,0, "cleanup");
 
+	/* The caller holds pmc_sx from the owner check through unhooking. */
+	sx_assert(&pmc_sx, SX_XLOCKED);
+
 	/* switch off sampling */
 	CPU_FOREACH(cpu)
 		DPCPU_ID_SET(cpu, pmc_sampled, 0);
 	pmc_intr = NULL;
 
-	sx_xlock(&pmc_sx);
 	if (pmc_hook == NULL) {	/* being unloaded already */
 		sx_xunlock(&pmc_sx);
 		return;
@@ -6125,6 +6104,33 @@ pmc_cleanup(void)
 }
 
 /*
+ * Do not unhook sampling while owners can still hold queued samples.
+ * MOD_UNLOAD runs under kld_sx.  A blocking acquisition of pmc_sx would
+ * invert the sampling path's pmc_sx -> kld_sx order, so refuse on lock
+ * contention.  Keep the successful try-lock through cleanup to exclude
+ * new owners between checking the hash and disabling the hooks.
+ */
+static int
+pmc_unload(void)
+{
+	struct pmc_ownerhash *ph;
+
+	if (!sx_try_xlock(&pmc_sx))
+		return (EXTERROR(EBUSY, "PMC state lock is busy"));
+	if (pmc_ownerhash != NULL) {
+		for (ph = pmc_ownerhash;
+		     ph <= &pmc_ownerhash[pmc_ownerhashmask]; ph++) {
+			if (!LIST_EMPTY(ph)) {
+				sx_xunlock(&pmc_sx);
+				return (EXTERROR(EBUSY, "PMC owners still exist"));
+			}
+		}
+	}
+	pmc_cleanup();
+	return (0);
+}
+
+/*
  * The function called at load/unload.
  */
 static int
@@ -6144,7 +6150,13 @@ load(struct module *module __unused, int cmd, void *arg __unused)
 		    pmc_cpu_max());
 		break;
 	case MOD_UNLOAD:
+		error = pmc_unload();
+		if (error == 0)
+			PMCDBG0(MOD,INI,1, "unloaded");
+		break;
 	case MOD_SHUTDOWN:
+		/* Shutdown cannot be vetoed by PMC owners. */
+		sx_xlock(&pmc_sx);
 		pmc_cleanup();
 		PMCDBG0(MOD,INI,1, "unloaded");
 		break;

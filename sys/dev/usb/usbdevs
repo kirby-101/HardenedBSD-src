@@ -589,6 +589,7 @@ vendor KONTRON		0x0fe6	Kontron AG
 vendor DVICO		0x0fe9	DViCO
 vendor QUALCOMM		0x1004	Qualcomm
 vendor APACER		0x1005	Apacer
+vendor LUMANATE		0x1009	Lumanate
 vendor MOTOROLA4	0x100d	Motorola
 vendor HP3		0x103c	Hewlett Packard
 vendor AIRPLUS		0x1011  Airplus
@@ -745,6 +746,7 @@ vendor SUNPLUS		0x1bcf	Sunplus Innovation Technology Inc.
 vendor WAGO		0x1be3  WAGO Kontakttechnik GmbH.
 vendor TELIT		0x1bc7  Telit
 vendor IONICS		0x1c0c	Ionics PlugComputer
+vendor HUMANWARE	0x1c71	HumanWare
 vendor LONGCHEER	0x1c9e	Longcheer Holdings, Ltd.
 vendor MPMAN		0x1cae	MpMan
 vendor DRESDENELEKTRONIK 0x1cf1 dresden elektronik
@@ -2644,6 +2646,9 @@ product HUAWEI E5573Cs322_ACM	0x1442	LTE AP modem ACM mode
 /* HUAWEI 3com products */
 product HUAWEI3COM WUB320G	0x0009	Aolynk WUB320g
 
+/* HumanWare products */
+product HUMANWARE APEX		0xc004	BrailleNote Apex
+
 /* IBM Corporation */
 product IBM USBCDROMDRIVE	0x4427	USB CD-ROM Drive
 product IBM USB4543		0x4543	TI IBM USB 4543 Modem
@@ -4134,6 +4139,7 @@ product RATOC REXUSB60F		0xb020	USB serial adapter REX-USB60F
 /* Green House and CompUSA OEM this part */
 product REALTEK USB20CRW	0x0158	USB20CRW Card Reader
 product REALTEK RTL8188ETV	0x0179	RTL8188ETV
+product REALTEK RTL8188FTV	0xf179	RTL8188FTV
 product REALTEK RTL8188CTV      0x018a  RTL8188CTV
 product REALTEK RTL8821AU_2	0x0811	RTL8821AU
 product REALTEK RTW8821CU_CD	0x1a2b	RTW8821CU_CD
@@ -4913,6 +4919,12 @@ product UBIQUAM UALL		0x3100	CDMA 1xRTT USB Modem (U-100/105/200/300/520)
 
 /* u-blox products */
 product UBLOX XPLR_M9		0x0501	M9 GNSS Explorer Kit
+product UBLOX LARA_L6_1		0x1341	LARA-L6
+product UBLOX LARA_L6_2		0x1342	LARA-L6
+product UBLOX LARA_L6_3		0x1343	LARA-L6
+product UBLOX LARA_L6_4		0x1349	LARA-L6
+product UBLOX LARA_L6_5		0x134A	LARA-L6
+product UBLOX LARA_L6_6		0x134B	LARA-L6
 
 /* Ultima products */
 product ULTIMA 1200UBPLUS	0x4002	1200 UB Plus scanner

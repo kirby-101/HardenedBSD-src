@@ -461,6 +461,7 @@ vgic_v3_cpucleanup(device_t dev, struct hypctx *hypctx)
 	}
 
 	mtx_destroy(&vgic_cpu->lr_mtx);
+	free(hypctx->vgic_cpu->private_irqs, M_VGIC_V3);
 	free(hypctx->vgic_cpu, M_VGIC_V3);
 }
 
@@ -1633,8 +1634,8 @@ vgic_v3_icc_sgi1r_write(struct vcpu *vcpu, uint64_t rval, void *arg)
 		aff1 = ICC_SGI1R_Aff1_VAL(rval) >> ICC_SGI1R_Aff1_SHIFT;
 		aff2 = ICC_SGI1R_Aff2_VAL(rval) >> ICC_SGI1R_Aff2_SHIFT;
 		aff3 = ICC_SGI1R_Aff3_VAL(rval) >> ICC_SGI1R_Aff3_SHIFT;
-		mpidr = aff3 << MPIDR_AFF3_SHIFT |
-		    aff2 << MPIDR_AFF2_SHIFT | aff1 << MPIDR_AFF1_SHIFT;
+		mpidr = aff3 << MPIDR_Aff3_SHIFT |
+		    aff2 << MPIDR_Aff2_SHIFT | aff1 << MPIDR_Aff1_SHIFT;
 
 		cpus = ICC_SGI1R_TargetList_VAL(rval) >>
 		    ICC_SGI1R_TargetList_SHIFT;
@@ -1642,7 +1643,7 @@ vgic_v3_icc_sgi1r_write(struct vcpu *vcpu, uint64_t rval, void *arg)
 		while (cpus > 0) {
 			if (cpus & 1) {
 				target_vcpuid = mpidr_to_vcpu(hyp,
-				    mpidr | (cpu_off << MPIDR_AFF0_SHIFT));
+				    mpidr | (cpu_off << MPIDR_Aff0_SHIFT));
 				if (target_vcpuid >= 0 &&
 				    CPU_ISSET(target_vcpuid, &active_cpus)) {
 					INJECT_IRQ(hyp, target_vcpuid, irqid,
@@ -1992,11 +1993,10 @@ vgic_v3_flush_hwstate(device_t dev, struct hypctx *hypctx)
 			    ICH_LR_EL2_STATE_ACTIVE;
 		}
 
-#ifdef notyet
-		/* TODO: Check why this is needed */
-		if ((irq->config & _MASK) == LEVEL)
-			*hypctx_sys_reg(hypctx, HOST_ICH_LR_EL2(i)) |= ICH_LR_EL2_EOI;
-#endif
+		if ((irq->config & VGIC_CONFIG_MASK) == VGIC_CONFIG_LEVEL) {
+			*hypctx_sys_reg(hypctx,
+			    HOST_ICH_LR_EL2(i)) |= ICH_LR_EL2_EOI;
+		}
 
 		if (!irq->active && vgic_v3_irq_pending(irq)) {
 			*hypctx_sys_reg(hypctx, HOST_ICH_LR_EL2(i)) |=
@@ -2136,6 +2136,13 @@ vgic_v3_init(device_t dev)
 	virt_features.ich_lr_num = ICH_VTR_EL2_LISTREGS(ich_vtr_el2);
 }
 
+struct vgic_v3_softc {
+	device_t	gic_dev;
+	struct  resource	*maint_irq;
+	void	*maint_cookie;
+	int	maint_rid;
+};
+
 static int
 vgic_v3_probe(device_t dev)
 {
@@ -2151,8 +2158,81 @@ vgic_v3_probe(device_t dev)
 }
 
 static int
+vgic_v3_release_maint_irq(struct vgic_v3_softc *sc)
+{
+	int error;
+
+	if (sc->maint_cookie != NULL) {
+		error = bus_teardown_intr(sc->gic_dev, sc->maint_irq,
+		    sc->maint_cookie);
+		if (error != 0)
+			return (error);
+
+		sc->maint_cookie = NULL;
+	}
+
+	if (sc->maint_irq != NULL) {
+		error = bus_release_resource(sc->gic_dev, SYS_RES_IRQ,
+		    sc->maint_rid, sc->maint_irq);
+		if (error != 0)
+			return (error);
+
+		sc->maint_irq = NULL;
+	}
+
+	return (0);
+}
+
+static int
+vgic_v3_maint_filter(void *arg)
+{
+	return (FILTER_HANDLED);
+}
+
+static int
 vgic_v3_attach(device_t dev)
 {
+	struct vgic_v3_softc *sc;
+	rman_res_t irq_map, count;
+	int error, cleanup_error;
+
+	sc = device_get_softc(dev);
+	sc->gic_dev = device_get_parent(dev);
+	sc->maint_rid = 0;
+
+	error = bus_get_resource(sc->gic_dev, SYS_RES_IRQ, sc->maint_rid,
+	    &irq_map, &count);
+
+	if (error)
+		goto fail;
+
+	if (count != 1) {
+		error = EINVAL;
+		goto fail;
+	}
+
+	sc->maint_irq = bus_alloc_resource_any(sc->gic_dev, SYS_RES_IRQ,
+	    &sc->maint_rid, RF_ACTIVE);
+	if (sc->maint_irq == NULL) {
+		error = ENXIO;
+		goto fail;
+	}
+
+	error = bus_setup_intr(sc->gic_dev, sc->maint_irq,
+	    INTR_TYPE_MISC | INTR_MPSAFE, vgic_v3_maint_filter, NULL, sc,
+	    &sc->maint_cookie);
+	if (error) {
+		sc->maint_cookie = NULL;
+		goto fail;
+	}
+
+	goto out;
+fail:
+	device_printf(dev, "Maintenance IRQ setup failed (%d)\n", error);
+	cleanup_error = vgic_v3_release_maint_irq(sc);
+	if (cleanup_error)
+		device_printf(dev, "IRQ cleanup failed: %d\n", cleanup_error);
+out:
 	vgic_dev = dev;
 	return (0);
 }
@@ -2160,7 +2240,18 @@ vgic_v3_attach(device_t dev)
 static int
 vgic_v3_detach(device_t dev)
 {
-	vgic_dev = NULL;
+	struct vgic_v3_softc *sc;
+	int error;
+
+	sc = device_get_softc(dev);
+
+	error = vgic_v3_release_maint_irq(sc);
+	if (error)
+		return (error);
+
+	if (vgic_dev == dev)
+		vgic_dev = NULL;
+
 	return (0);
 }
 
@@ -2190,6 +2281,7 @@ static device_method_t vgic_v3_methods[] = {
 };
 
 /* TODO: Create a vgic base class? */
-DEFINE_CLASS_0(vgic, vgic_v3_driver, vgic_v3_methods, 0);
+DEFINE_CLASS_0(vgic, vgic_v3_driver, vgic_v3_methods,
+    sizeof(struct vgic_v3_softc));
 
 DRIVER_MODULE(vgic_v3, gic, vgic_v3_driver, 0, 0);

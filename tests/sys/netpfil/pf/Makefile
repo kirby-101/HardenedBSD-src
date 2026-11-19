@@ -5,6 +5,7 @@ TESTS_SUBDIRS+=	ioctl
 
 ATF_TESTS_SH+=	altq \
 		anchor \
+		authpf \
 		counters \
 		debug \
 		divert-to \
@@ -31,6 +32,7 @@ ATF_TESTS_SH+=	altq \
 		modulate \
 		names \
 		nat \
+		nat46 \
 		nat64 \
 		once \
 		osfp \
@@ -89,7 +91,9 @@ ${PACKAGE}FILES+=	\
 			frag-overreplace.py \
 			frag-overhole.py \
 			frag-adjhole.py \
+			pfctl_adopt.py \
 			pfsync_defer.py \
+			pfsync_upd_c.py \
 			pft_ether.py \
 			pft_read_ipfix.py \
 			rdr-srcport.py \
@@ -107,7 +111,9 @@ ${PACKAGE}FILESMODE_frag-overlimit.py=	0555
 ${PACKAGE}FILESMODE_frag-overreplace.py=	0555
 ${PACKAGE}FILESMODE_frag-overhole.py=	0555
 ${PACKAGE}FILESMODE_frag-adjhole.py=	0555
+${PACKAGE}FILESMODE_pfctl_adopt.py=	0555
 ${PACKAGE}FILESMODE_pfsync_defer.py=	0555
+${PACKAGE}FILESMODE_pfsync_upd_c.py=	0555
 ${PACKAGE}FILESMODE_pft_ether.py=	0555
 ${PACKAGE}FILESMODE_pft_read_ipfix.py=	0555
 

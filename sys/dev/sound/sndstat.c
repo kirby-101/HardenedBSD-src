@@ -102,7 +102,7 @@ struct sndstat_file {
 	size_t devs_nbytes;	/* (l) */
 	TAILQ_HEAD(, sndstat_userdev) userdev_list;	/* (l) */
 	int out_offset;
-  	int in_offset;
+	int in_offset;
 	int fflags;
 };
 
@@ -403,7 +403,7 @@ sndstat_build_sound4_nvlist(struct snddev_info *d, nvlist_t **dip)
 	nvlist_add_string(
 			di, SNDST_DSPS_DESC, device_get_desc(d->dev));
 
-	PCM_ACQUIRE_QUICK(d);
+	PCM_ACQUIRE(d);
 	nvlist_add_number(di, SNDST_DSPS_PCHAN, d->playcount);
 	nvlist_add_number(di, SNDST_DSPS_RCHAN, d->reccount);
 	if (d->playcount > 0) {
@@ -457,7 +457,7 @@ sndstat_build_sound4_nvlist(struct snddev_info *d, nvlist_t **dip)
 		cdi = nvlist_create(0);
 		if (cdi == NULL) {
 			sbuf_delete(&sb);
-			PCM_RELEASE_QUICK(d);
+			PCM_RELEASE(d);
 			err = ENOMEM;
 			goto done;
 		}
@@ -577,14 +577,14 @@ sndstat_build_sound4_nvlist(struct snddev_info *d, nvlist_t **dip)
 		nvlist_destroy(cdi);
 		err = nvlist_error(sound4di);
 		if (err) {
-			PCM_RELEASE_QUICK(d);
+			PCM_RELEASE(d);
 			goto done;
 		}
 	}
 	nvlist_move_nvlist(di, SNDST_DSPS_PROVIDER_INFO, sound4di);
 	sound4di = NULL;
 
-	PCM_RELEASE_QUICK(d);
+	PCM_RELEASE(d);
 	nvlist_add_string(di, SNDST_DSPS_PROVIDER, SNDST_DSPS_SOUND4_PROVIDER);
 
 	err = nvlist_error(di);
@@ -884,7 +884,7 @@ sndstat_dsp_nvlist_is_sane(const nvlist_t *nvlist)
 		    nvlist_exists_number(nvlist, "rfmts")))
 			return (false);
 	}
-	
+
 	return (true);
 
 }
@@ -1368,7 +1368,7 @@ sndstat_prepare(struct sndstat_file *pf_self)
 	struct sndstat_entry *ent;
 	struct snddev_info *d;
 	struct sndstat_file *pf;
-    	int k;
+	int k;
 
 	/* make sure buffer is reset */
 	sbuf_clear(s);
@@ -1390,9 +1390,9 @@ sndstat_prepare(struct sndstat_file *pf_self)
 			if (snd_verbose > 0)
 				sbuf_printf(s, " %s", ent->str);
 			/* XXX Need Giant magic entry ??? */
-			PCM_ACQUIRE_QUICK(d);
+			PCM_ACQUIRE(d);
 			sndstat_prepare_pcm(s, ent->dev, snd_verbose);
-			PCM_RELEASE_QUICK(d);
+			PCM_RELEASE(d);
 			sbuf_printf(s, "\n");
 		} else if (ent->type == SNDST_TYPE_MIDI) {
 			/* TODO */
@@ -1429,7 +1429,7 @@ sndstat_prepare(struct sndstat_file *pf_self)
 		sbuf_printf(s, "No devices installed from userspace.\n");
 
 	sbuf_finish(s);
-    	return (sbuf_len(s));
+	return (sbuf_len(s));
 }
 
 static void

@@ -217,18 +217,19 @@ SYSCTL_INT(_net_inet_tcp, OID_AUTO, insecure_ack, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(tcp_insecure_ack), 0,
     "Follow RFC793 criteria for validating SEG.ACK");
 
-VNET_DEFINE(int, tcp_recvspace) = 1024*64;
+VNET_DEFINE(u_int, tcp_recvspace) = 1024*64;
 #define	V_tcp_recvspace	VNET(tcp_recvspace)
-SYSCTL_INT(_net_inet_tcp, TCPCTL_RECVSPACE, recvspace, CTLFLAG_VNET | CTLFLAG_RW,
-    &VNET_NAME(tcp_recvspace), 0, "Initial receive socket buffer size");
+SYSCTL_UINT(_net_inet_tcp, TCPCTL_RECVSPACE, recvspace,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(tcp_recvspace), 0,
+    "Initial receive socket buffer size");
 
-VNET_DEFINE(int, tcp_do_autorcvbuf) = 1;
-SYSCTL_INT(_net_inet_tcp, OID_AUTO, recvbuf_auto, CTLFLAG_VNET | CTLFLAG_RW,
+VNET_DEFINE(bool, tcp_do_autorcvbuf) = true;
+SYSCTL_BOOL(_net_inet_tcp, OID_AUTO, recvbuf_auto, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(tcp_do_autorcvbuf), 0,
     "Enable automatic receive buffer sizing");
 
-VNET_DEFINE(int, tcp_autorcvbuf_max) = 8*1024*1024;
-SYSCTL_INT(_net_inet_tcp, OID_AUTO, recvbuf_max, CTLFLAG_VNET | CTLFLAG_RW,
+VNET_DEFINE(u_int, tcp_autorcvbuf_max) = 8*1024*1024;
+SYSCTL_UINT(_net_inet_tcp, OID_AUTO, recvbuf_max, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(tcp_autorcvbuf_max), 0,
     "Max size of automatic receive buffer");
 
@@ -578,19 +579,12 @@ cc_ecnpkt_handler(struct tcpcb *tp, struct tcphdr *th, uint8_t iptos)
 int
 tcp6_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
 {
-	struct mbuf *m;
 
-	m = *mp;
-	if (m->m_len < *offp + sizeof(struct tcphdr)) {
-		m = m_pullup(m, *offp + sizeof(struct tcphdr));
-		if (m == NULL) {
-			*mp = m;
-			TCPSTAT_INC(tcps_rcvshort);
-			return (IPPROTO_DONE);
-		}
+	if ((*mp = m_pullup(*mp, *offp + sizeof(struct tcphdr))) == NULL) {
+		TCPSTAT_INC(tcps_rcvshort);
+		return (IPPROTO_DONE);
 	}
 
-	*mp = m;
 	return (tcp_input_with_port(mp, offp, proto, port));
 }
 
@@ -647,7 +641,7 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
 	isipv6 = mtod(m, struct ip *)->ip_v == 6;
 	if (isipv6) {
 		ip6 = mtod(m, struct ip6_hdr *);
-		th = (struct tcphdr *)((caddr_t)ip6 + off0);
+		th = (struct tcphdr *)((char *)ip6 + off0);
 		tlen = sizeof(*ip6) + ntohs(ip6->ip6_plen) - off0;
 		if (port)
 			goto skip6_csum;
@@ -701,15 +695,12 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
 			ip_stripoptions(m);
 			off0 = sizeof(struct ip);
 		}
-		if (m->m_len < sizeof (struct tcpiphdr)) {
-			if ((m = m_pullup(m, sizeof (struct tcpiphdr)))
-			    == NULL) {
-				TCPSTAT_INC(tcps_rcvshort);
-				return (IPPROTO_DONE);
-			}
+		if ((m = m_pullup(m, sizeof (struct tcpiphdr))) == NULL) {
+			TCPSTAT_INC(tcps_rcvshort);
+			return (IPPROTO_DONE);
 		}
 		ip = mtod(m, struct ip *);
-		th = (struct tcphdr *)((caddr_t)ip + off0);
+		th = (struct tcphdr *)((char *)ip + off0);
 		tlen = ntohs(ip->ip_len) - off0;
 
 		iptos = ip->ip_tos;
@@ -777,15 +768,12 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
 	if (off > sizeof (struct tcphdr)) {
 #ifdef INET6
 		if (isipv6) {
-			if (m->m_len < off0 + off) {
-				m = m_pullup(m, off0 + off);
-				if (m == NULL) {
-					TCPSTAT_INC(tcps_rcvshort);
-					return (IPPROTO_DONE);
-				}
-				ip6 = mtod(m, struct ip6_hdr *);
-				th = (struct tcphdr *)((caddr_t)ip6 + off0);
+			if ((m = m_pullup(m, off0 + off)) == NULL) {
+				TCPSTAT_INC(tcps_rcvshort);
+				return (IPPROTO_DONE);
 			}
+			ip6 = mtod(m, struct ip6_hdr *);
+			th = (struct tcphdr *)((char *)ip6 + off0);
 		}
 #endif
 #if defined(INET) && defined(INET6)
@@ -793,15 +781,13 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
 #endif
 #ifdef INET
 		{
-			if (m->m_len < sizeof(struct ip) + off) {
-				if ((m = m_pullup(m, sizeof (struct ip) + off))
-				    == NULL) {
-					TCPSTAT_INC(tcps_rcvshort);
-					return (IPPROTO_DONE);
-				}
-				ip = mtod(m, struct ip *);
-				th = (struct tcphdr *)((caddr_t)ip + off0);
+			if ((m = m_pullup(m, sizeof (struct ip) + off)) ==
+			    NULL) {
+				TCPSTAT_INC(tcps_rcvshort);
+				return (IPPROTO_DONE);
 			}
+			ip = mtod(m, struct ip *);
+			th = (struct tcphdr *)((char *)ip + off0);
 		}
 #endif
 		optlen = off - sizeof (struct tcphdr);
@@ -1439,11 +1425,12 @@ drop:
  * TODO: Only step up if the application is actually serving
  * the buffer to better manage the socket buffer resources.
  */
-int
-tcp_autorcvbuf(struct mbuf *m, struct tcphdr *th, struct socket *so,
-    struct tcpcb *tp, int tlen)
+void
+tcp_autorcvbuf(struct tcpcb *tp, u_int tlen)
 {
-	int newsize = 0;
+	struct socket *so = tptosocket(tp);
+
+	SOCK_RECVBUF_LOCK_ASSERT(so);
 
 	if (V_tcp_do_autorcvbuf && (so->so_rcv.sb_flags & SB_AUTOSIZE) &&
 	    tp->t_srtt != 0 && tp->rfbuf_ts != 0 &&
@@ -1451,17 +1438,78 @@ tcp_autorcvbuf(struct mbuf *m, struct tcphdr *th, struct socket *so,
 	    ((tp->t_srtt >> TCP_RTT_SHIFT)/2)) {
 		if (tp->rfbuf_cnt > ((so->so_rcv.sb_hiwat / 2)/ 4 * 3) &&
 		    so->so_rcv.sb_hiwat < V_tcp_autorcvbuf_max) {
-			newsize = min((so->so_rcv.sb_hiwat + (so->so_rcv.sb_hiwat/2)), V_tcp_autorcvbuf_max);
-		}
-		TCP_PROBE6(receive__autoresize, NULL, tp, m, tp, th, newsize);
+			u_int newsize;
 
+			newsize = min((so->so_rcv.sb_hiwat +
+			    (so->so_rcv.sb_hiwat / 2)), V_tcp_autorcvbuf_max);
+			if (sbreserve_locked(so, SO_RCV, newsize, NULL)) {
+				TCP_PROBE2(receive__autoresize, tp, newsize);
+			} else {
+				so->so_rcv.sb_flags &= ~SB_AUTOSIZE;
+			}
+		}
 		/* Start over with next RTT. */
 		tp->rfbuf_ts = 0;
 		tp->rfbuf_cnt = 0;
 	} else {
 		tp->rfbuf_cnt += tlen;	/* add up */
 	}
-	return (newsize);
+}
+
+/*
+ * Pull out of band byte out of a segment so
+ * it doesn't appear in the user's data queue.
+ * It is still reflected in the segment length for
+ * sequencing purposes.
+ */
+static int
+tcp_pulloutofband(struct socket *so, struct tcphdr *th, struct mbuf *m,
+    int off)
+{
+	int cnt = off + th->th_urp - 1;
+
+	while (cnt >= 0) {
+		if (m->m_len > cnt) {
+			struct tcpcb *tp = sototcpcb(so);
+			char ub;
+
+			INP_WLOCK_ASSERT(tptoinpcb(tp));
+
+			m_copydata(m, cnt, 1, &ub);
+			if (cnt == 0) {
+				m->m_data++;
+				m->m_len--;
+			} else if (m->m_len - 1 == cnt) {
+				m->m_len--;
+			} else if (M_WRITABLE(m)) {
+				char *cp;
+
+				cp = mtodo(m, cnt);
+				memmove(cp, cp + 1, m->m_len - cnt - 1);
+				m->m_len--;
+			} else {
+				struct mbuf *n;
+
+				n = m_copym(m, cnt + 1, m->m_len - cnt - 1,
+				    M_NOWAIT);
+				if (n == NULL)
+					return (ENOBUFS);
+				n->m_next = m->m_next;
+				m->m_next = n;
+				m->m_len = cnt;
+			}
+			tp->t_iobc = ub;
+			tp->t_oobflags |= TCPOOB_HAVEDATA;
+			if ((m->m_flags & M_PKTHDR) != 0)
+				m->m_pkthdr.len--;
+			return (0);
+		}
+		cnt -= m->m_len;
+		m = m->m_next;
+		if (m == NULL)
+			break;
+	}
+	panic("tcp_pulloutofband");
 }
 
 int
@@ -1862,8 +1910,6 @@ tcp_do_segment(struct tcpcb *tp, struct mbuf *m, struct tcphdr *th,
 			}
 		} else if (th->th_ack == tp->snd_una &&
 		    tlen <= sbspace(&so->so_rcv)) {
-			int newsize = 0;	/* automatic sockbuf scaling */
-
 			/*
 			 * This is a pure, in-sequence data packet with
 			 * nothing on the reassembly queue and we have enough
@@ -1897,21 +1943,12 @@ tcp_do_segment(struct tcpcb *tp, struct mbuf *m, struct tcphdr *th,
 			TCPSTAT_ADD(tcps_rcvbyte, tlen);
 			TCP_PROBE3(debug__input, tp, th, m);
 
-			newsize = tcp_autorcvbuf(m, th, so, tp, tlen);
-
 			/* Add data to socket buffer. */
 			SOCK_RECVBUF_LOCK(so);
 			if (so->so_rcv.sb_state & SBS_CANTRCVMORE) {
 				m_freem(m);
 			} else {
-				/*
-				 * Set new socket buffer size.
-				 * Give up when limit is reached.
-				 */
-				if (newsize)
-					if (!sbreserve_locked(so, SO_RCV,
-					    newsize, NULL))
-						so->so_rcv.sb_flags &= ~SB_AUTOSIZE;
+				tcp_autorcvbuf(tp, tlen);
 				m_adj(m, drop_hdrlen);	/* delayed header drop */
 				sbappendstream_locked(&so->so_rcv, m, 0);
 			}
@@ -2396,10 +2433,7 @@ tcp_do_segment(struct tcpcb *tp, struct mbuf *m, struct tcphdr *th,
 	/*
 	 * Ack processing.
 	 */
-	if (SEQ_GT(tp->snd_una, tp->iss + (TCP_MAXWIN << tp->snd_scale))) {
-		/* Checking SEG.ACK against ISS is definitely redundant. */
-		tp->t_flags2 |= TF2_NO_ISS_CHECK;
-	}
+	tcp_adapt_iss_check(tp);
 	if (!V_tcp_insecure_ack) {
 		tcp_seq seq_min;
 		bool ghost_ack_check;
@@ -3135,7 +3169,8 @@ step6:
 		if (th->th_urp <= (uint32_t)tlen &&
 		    !(so->so_options & SO_OOBINLINE)) {
 			/* hdr drop is delayed */
-			tcp_pulloutofband(so, th, m, drop_hdrlen);
+			if (tcp_pulloutofband(so, th, m, drop_hdrlen) != 0)
+				goto drop;
 		}
 	} else {
 		/*
@@ -3584,41 +3619,6 @@ tcp_dooptions(struct tcpopt *to, u_char *cp, int cnt, int flags)
 }
 
 /*
- * Pull out of band byte out of a segment so
- * it doesn't appear in the user's data queue.
- * It is still reflected in the segment length for
- * sequencing purposes.
- */
-void
-tcp_pulloutofband(struct socket *so, struct tcphdr *th, struct mbuf *m,
-    int off)
-{
-	int cnt = off + th->th_urp - 1;
-
-	while (cnt >= 0) {
-		if (m->m_len > cnt) {
-			char *cp = mtod(m, caddr_t) + cnt;
-			struct tcpcb *tp = sototcpcb(so);
-
-			INP_WLOCK_ASSERT(tptoinpcb(tp));
-
-			tp->t_iobc = *cp;
-			tp->t_oobflags |= TCPOOB_HAVEDATA;
-			bcopy(cp+1, cp, (unsigned)(m->m_len - cnt - 1));
-			m->m_len--;
-			if (m->m_flags & M_PKTHDR)
-				m->m_pkthdr.len--;
-			return;
-		}
-		cnt -= m->m_len;
-		m = m->m_next;
-		if (m == NULL)
-			break;
-	}
-	panic("tcp_pulloutofband");
-}
-
-/*
  * Collect new round-trip time estimate
  * and update averages and current timeout.
  */
@@ -3897,18 +3897,15 @@ tcp_mss(struct tcpcb *tp, int offer)
 	mss = tp->t_maxseg;
 
 	/*
-	 * If there's a pipesize, change the socket buffer to that size,
-	 * don't change if sb_hiwat is different than default (then it
-	 * has been changed on purpose with setsockopt).
+	 * If there's a pipesize, change the socket buffer to that size, unless
+	 * it has been set by a setsockopt(2).
 	 * Make the socket buffers an integral number of mss units;
 	 * if the mss is larger than the socket buffer, decrease the mss.
 	 */
 	so = inp->inp_socket;
 	SOCK_SENDBUF_LOCK(so);
-	if ((so->so_snd.sb_hiwat == V_tcp_sendspace) && metrics.hc_sendpipe)
-		bufsize = metrics.hc_sendpipe;
-	else
-		bufsize = so->so_snd.sb_hiwat;
+	bufsize = (so->so_snd.sb_flags & SB_AUTOSIZE) ?
+	    max(metrics.hc_sendpipe, so->so_snd.sb_hiwat) : so->so_snd.sb_hiwat;
 	if (bufsize < mss)
 		mss = bufsize;
 	else {
@@ -3940,10 +3937,8 @@ tcp_mss(struct tcpcb *tp, int offer)
 	}
 
 	SOCK_RECVBUF_LOCK(so);
-	if ((so->so_rcv.sb_hiwat == V_tcp_recvspace) && metrics.hc_recvpipe)
-		bufsize = metrics.hc_recvpipe;
-	else
-		bufsize = so->so_rcv.sb_hiwat;
+	bufsize = (so->so_rcv.sb_flags & SB_AUTOSIZE) ?
+	    max(metrics.hc_recvpipe, so->so_rcv.sb_hiwat) : so->so_rcv.sb_hiwat;
 	if (bufsize > mss) {
 		bufsize = roundup(bufsize, mss);
 		if (bufsize > sb_max)

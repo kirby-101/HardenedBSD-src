@@ -50,8 +50,8 @@
 #define	EMUPAGESIZE	4096	/* don't change */
 #define	EMUMAXPAGES	(WAVEOUT_MAXBUFSIZE * NUM_G / EMUPAGESIZE)
 #define	EMU10K1_PCI_ID	0x00021102	/* 1102 => Creative Labs Vendor ID */
-#define	EMU10K2_PCI_ID	0x00041102	
-#define	EMU10K3_PCI_ID	0x00081102	
+#define	EMU10K2_PCI_ID	0x00041102
+#define	EMU10K3_PCI_ID	0x00081102
 #define	EMU_DEFAULT_BUFSZ	4096
 #define EMU_MAX_CHANS	8
 #define	EMU_CHANS	4
@@ -1152,10 +1152,10 @@ CHANNEL_DECLARE(emurchan);
 
 static unsigned char
 emu_mread(struct mpu401 *arg, void *sc, int reg)
-{	
+{
 	unsigned int d;
 
-	d = emu_rd((struct sc_info *)sc, 0x18 + reg, 1); 
+	d = emu_rd((struct sc_info *)sc, 0x18 + reg, 1);
 	return d;
 }
 
@@ -1179,9 +1179,9 @@ emu_muninit(struct mpu401 *arg, void *cookie)
 }
 
 static kobj_method_t emu_mpu_methods[] = {
-    	KOBJMETHOD(mpufoi_read,		emu_mread),
-    	KOBJMETHOD(mpufoi_write,	emu_mwrite),
-    	KOBJMETHOD(mpufoi_uninit,	emu_muninit),
+	KOBJMETHOD(mpufoi_read,		emu_mread),
+	KOBJMETHOD(mpufoi_write,	emu_mwrite),
+	KOBJMETHOD(mpufoi_uninit,	emu_muninit),
 	KOBJMETHOD_END
 };
 
@@ -1957,7 +1957,7 @@ emu_init(struct sc_info *sc)
 		}
 	} else {
 		/* EMU10K1 initialization code */
-		tmp = EMU_HCFG_AUDIOENABLE | EMU_HCFG_LOCKTANKCACHE_MASK 
+		tmp = EMU_HCFG_AUDIOENABLE | EMU_HCFG_LOCKTANKCACHE_MASK
 		    | EMU_HCFG_AUTOMUTE;
 		if (sc->rev >= 6)
 			tmp |= EMU_HCFG_JOYENABLE;
@@ -2196,7 +2196,6 @@ static driver_t emu_driver = {
 DRIVER_MODULE(snd_emu10k1, pci, emu_driver, NULL, NULL);
 MODULE_DEPEND(snd_emu10k1, sound, 1, 1, 1);
 MODULE_VERSION(snd_emu10k1, 1);
-MODULE_DEPEND(snd_emu10k1, midi, 1, 1, 1);
 
 /* dummy driver to silence the joystick device */
 static int

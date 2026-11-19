@@ -36,6 +36,8 @@
 #define	_MACHINE_CPU_H_
 
 #ifndef LOCORE
+#include <sys/_cpuset.h>
+
 #include <machine/atomic.h>
 #include <machine/cpufunc.h>
 #include <machine/frame.h>
@@ -78,6 +80,7 @@
 #define	MARCHID_UCB_BOOM	MARCHID_OPENSOURCE(2)
 #define	MARCHID_UCB_SPIKE	MARCHID_OPENSOURCE(5)
 #define	MARCHID_UCAM_RVBS	MARCHID_OPENSOURCE(10)
+#define	MARCHID_QEMU		MARCHID_OPENSOURCE(42)
 
 /* SiFive marchid values */
 #define	MARCHID_SIFIVE_U7	MARCHID_COMMERCIAL(7)
@@ -105,6 +108,7 @@ void	cpu_reset(void) __dead2;
 void	fork_trampoline(void);
 void	identify_cpu(u_int cpu);
 void	printcpuinfo(u_int cpu);
+cpuset_t hartmask_to_cpumask(const cpuset_t);
 
 static __inline uint64_t
 get_cyclecount(void)

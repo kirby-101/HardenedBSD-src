@@ -154,7 +154,7 @@ pf_match_translation_rule(int rs_num, struct pf_test_ctx *ctx, struct pf_krulese
 			dst = &r->dst;
 		}
 
-		pf_counter_u64_add(&r->evaluations, 1);
+		counter_u64_add(r->evaluations, 1);
 		PF_TEST_ATTRIB(pfi_kkif_match(r->kif, pd->kif) == r->ifnot,
 			r->skip[PF_SKIP_IFP]);
 		PF_TEST_ATTRIB(r->direction && r->direction != pd->dir,
@@ -222,6 +222,10 @@ pf_match_translation_rule(int rs_num, struct pf_test_ctx *ctx, struct pf_krulese
 			ctx->aruleset = ruleset;	/* and its ruleset */
 			if (pf_step_into_translation_anchor(rs_num, ctx,
 			    r) != PF_TEST_OK) {
+				break;
+			}
+			/* If we found a match in the anchor we're done. */
+			if (ctx->tr != NULL) {
 				break;
 			}
 		}
@@ -1395,12 +1399,12 @@ pf_get_transaddr_af(struct pf_krule *r, struct pf_pdesc *pd)
 			pd->ndport = ICMP_ECHOREPLY;
 		pd->ndport = htons(pd->ndport);
 	} else if (pd->proto == IPPROTO_ICMP && pd->naf == AF_INET6) {
-		pd->nsport = ntohs(pd->nsport);
+		pd->ndport = ntohs(pd->ndport);
 		if (pd->ndport == ICMP_ECHO)
 			pd->ndport = ICMP6_ECHO_REQUEST;
 		else if (pd->ndport == ICMP_ECHOREPLY)
 			pd->ndport = ICMP6_ECHO_REPLY;
-		pd->nsport = htons(pd->nsport);
+		pd->ndport = htons(pd->ndport);
 	}
 
 	/* get the destination address and port */

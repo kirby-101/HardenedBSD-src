@@ -249,8 +249,6 @@ sysctl_hw_snd_feeder_rate_quality(SYSCTL_HANDLER_ARGS)
 		d = devclass_get_softc(pcm_devclass, i);
 		if (!PCM_REGISTERED(d))
 			continue;
-		PCM_LOCK(d);
-		PCM_WAIT(d);
 		PCM_ACQUIRE(d);
 		CHN_FOREACH(c, d, channels.pcm) {
 			CHN_LOCK(c);
@@ -263,7 +261,6 @@ sysctl_hw_snd_feeder_rate_quality(SYSCTL_HANDLER_ARGS)
 			CHN_UNLOCK(c);
 		}
 		PCM_RELEASE(d);
-		PCM_UNLOCK(d);
 	}
 	bus_topo_unlock();
 
@@ -504,7 +501,7 @@ z_feed_linear_##SIGN##BIT##ENDIAN(struct z_info *info, uint8_t *dst)		\
 	z += info->z_dy;						\
 	p adv##= info->channels * PCM_##BIT##_BPS
 
-/* 
+/*
  * XXX GCC4 optimization is such a !@#$%, need manual unrolling.
  */
 #if defined(__GNUC__) && __GNUC__ >= 4
@@ -544,13 +541,13 @@ z_feed_sinc_##SIGN##BIT##ENDIAN(struct z_info *info, uint8_t *dst)		\
 		c = 0;								\
 		p = info->z_delay + (z_next(info, center, 1) *			\
 		    info->channels * PCM_##BIT##_BPS) + ch;			\
-		for (i = info->z_size; i != 0; i -= Z_SINC_ACCUMULATE_DECR) 	\
+		for (i = info->z_size; i != 0; i -= Z_SINC_ACCUMULATE_DECR)	\
 			Z_SINC_ACCUMULATE(SIGN, BIT, ENDIAN, +);		\
 		z = info->z_dy - (info->z_alpha * info->z_dx);			\
 		c = 0;								\
 		p = info->z_delay + (center * info->channels *			\
 		    PCM_##BIT##_BPS) + ch;					\
-		for (i = info->z_size; i != 0; i -= Z_SINC_ACCUMULATE_DECR) 	\
+		for (i = info->z_size; i != 0; i -= Z_SINC_ACCUMULATE_DECR)	\
 			Z_SINC_ACCUMULATE(SIGN, BIT, ENDIAN, -);		\
 		if (info->z_scale != Z_ONE)					\
 			v = Z_SCALE_##BIT(v, info->z_scale);			\

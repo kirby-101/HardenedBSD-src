@@ -110,6 +110,11 @@ static int ncallout;
 SYSCTL_INT(_kern, OID_AUTO, ncallout, CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &ncallout, 0,
     "Number of entries in callwheel and size of timeout() preallocation");
 
+static bool __read_mostly callout_spread;
+SYSCTL_BOOL(_kern, OID_AUTO, callout_spread, CTLFLAG_RWTUN,
+    &callout_spread, 0,
+    "Distribute initial callout CPU assignments after SMP startup");
+
 #ifdef	RSS
 static int pin_default_swi = 1;
 static int pin_pcpu_swi = 1;
@@ -634,6 +639,7 @@ softclock_call_cc(struct callout *c, struct callout_cpu *cc,
 	struct lock_class *class;
 	struct lock_object *c_lock;
 	uintptr_t lock_status;
+	sbintime_t prec;
 	int c_iflags;
 #ifdef SMP
 	struct callout_cpu *new_cc;
@@ -676,10 +682,26 @@ softclock_call_cc(struct callout *c, struct callout_cpu *cc,
 		if (c_iflags & CALLOUT_TRYLOCK) {
 			if (__predict_false(class->lc_trylock(c_lock,
 			    lock_status) == 0)) {
+				/*
+				 * Retry after half of the precision, but not
+				 * sooner than a tick from the current time.
+				 * Every failure halves the precision, so the
+				 * retry delay would otherwise shrink to zero.
+				 * Immediate retries can starve a
+				 * lower-priority lock owner on the same CPU,
+				 * preventing it from running to release the
+				 * lock.
+				 *
+				 * Use the current time because cc_lastscan may
+				 * be stale by the time the lock is attempted.
+				 * Keep the precision at least a tick as well,
+				 * so that the retries of many contended
+				 * callouts can share a timer interrupt.
+				 */
 				cc_exec_curr(cc, direct) = NULL;
-				callout_cc_add(c, cc,
-				    cc->cc_lastscan + c->c_precision / 2,
-				    qmax(c->c_precision / 2, 1), c_func, c_arg,
+				prec = qmax(c->c_precision / 2, tick_sbt);
+				callout_cc_add(c, cc, sbinuptime() + prec,
+				    prec, c_func, c_arg,
 				    (direct) ? C_DIRECT_EXEC : 0);
 				return;
 			}
@@ -1340,7 +1362,7 @@ callout_init(struct callout *c, int mpsafe)
 		c->c_lock = &Giant.lock_object;
 		c->c_iflags = 0;
 	}
-	c->c_cpu = cc_default_cpu;
+	c->c_cpu = callout_spread ? curcpu : cc_default_cpu;
 }
 
 void
@@ -1360,7 +1382,7 @@ _callout_init_lock(struct callout *c, struct lock_object *lock, int flags)
 	*c = (struct callout ){
 		.c_lock = lock,
 		.c_iflags = flags,
-		.c_cpu = cc_default_cpu,
+		.c_cpu = callout_spread ? curcpu : cc_default_cpu,
 	};
 }
 
