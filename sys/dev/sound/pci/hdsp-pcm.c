@@ -965,11 +965,8 @@ hdspchan_setblocksize(kobj_t obj, void *data, uint32_t blocksize)
 		}
 	}
 
-<<<<<<< HEAD
-=======
 	/* sndbuf_resize() may sleep. */
 	mtx_unlock(&sc->lock);
->>>>>>> rad/hardened/current/master
 	if (sndbuf_resize(ch->buffer, 2,
 	    (hl->period * AFMT_CHANNEL(ch->format) * sizeof(uint32_t))) != 0)
 		return (0);
