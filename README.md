@@ -1,12 +1,12 @@
 | Branch | __FreeBSD_version | Last commit |
 |---|---:|---|
-| [freebsd/15-stable/main](../../tree/freebsd/15-stable/main) | 1502501 | 19.11.26 12:52 |
-| [freebsd/current/main](../../tree/freebsd/current/main) | 1600031 | 19.11.26 10:56 |
-| [hardened/15-stable/main](../../tree/hardened/15-stable/main) | 1502501 | 19.11.26 12:01 |
+| [freebsd/15-stable/main](../../tree/freebsd/15-stable/main) | 1502501 | 19.11.26 18:04 |
+| [freebsd/current/main](../../tree/freebsd/current/main) | 1600031 | 19.11.26 17:57 |
+| [hardened/15-stable/main](../../tree/hardened/15-stable/main) | 1502501 | 19.11.26 18:01 |
 | [hardened/15-stable/pledge](../../tree/hardened/15-stable/pledge) | 1501506 | 30.10.26 06:01 |
 | [hardened/current/cross-dso-cfi](../../tree/hardened/current/cross-dso-cfi) | 1600026 | 01.10.26 00:01 |
-| [hardened/current/master](../../tree/hardened/current/master) | 1600031 | 19.11.26 12:01 |
-| [hardened/current/pledge](../../tree/hardened/current/pledge) | 1600031 | 19.11.26 12:02 |
+| [hardened/current/master](../../tree/hardened/current/master) | 1600031 | 19.11.26 18:01 |
+| [hardened/current/pledge](../../tree/hardened/current/pledge) | 1600031 | 19.11.26 18:02 |
 | [hardened/hbsdfw/main](../../tree/hardened/hbsdfw/main) | 1600029 | 30.10.26 00:01 |
 | [quarterly/hardened/15-stable/main-2026q2](../../tree/quarterly/hardened/15-stable/main-2026q2) | 1500507 | 10.06.26 21:53 |
 | [quarterly/hardened/15-stable/main-2026q3](../../tree/quarterly/hardened/15-stable/main-2026q3) | 1501501 | 29.08.26 17:32 |
