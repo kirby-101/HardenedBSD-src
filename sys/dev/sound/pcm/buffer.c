@@ -97,10 +97,7 @@ sndbuf_busy(struct snd_dbuf *b)
 
 	return (refcount_load(&b->refcount) > 1 ||
 	    (b->flags & SNDBUF_F_DETACHED) != 0 ||
-<<<<<<< HEAD
-=======
 	    b->channel->inprog != 0 ||
->>>>>>> rad/hardened/15-stable/main
 	    /*
 	     * XXX-MJ CHN_F_MMAP is not reliable, but for software buffers the
 	     * refcount accurately reflects whether the buffer is mapped.

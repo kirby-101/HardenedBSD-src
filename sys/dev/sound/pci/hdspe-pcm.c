@@ -963,11 +963,8 @@ hdspechan_setblocksize(kobj_t obj, void *data, uint32_t blocksize)
 		}
 	}
 
-<<<<<<< HEAD
-=======
 	/* sndbuf_resize() may sleep. */
 	mtx_unlock(&sc->lock);
->>>>>>> rad/hardened/15-stable/main
 	if (sndbuf_resize(ch->buffer,
 	    (HDSPE_CHANBUF_SIZE * AFMT_CHANNEL(ch->format)) / (hl->period * 4),
 	    (hl->period * 4)) != 0)
@@ -990,10 +987,7 @@ hdspechan_setblocksize(kobj_t obj, void *data, uint32_t blocksize)
 	device_printf(scp->dev, "New period=%d\n", hl->period);
 #endif
 
-<<<<<<< HEAD
-=======
 	return (ch->buffer->blksz);
->>>>>>> rad/hardened/15-stable/main
 end:
 	mtx_unlock(&sc->lock);
 

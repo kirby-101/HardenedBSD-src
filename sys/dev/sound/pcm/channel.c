@@ -1849,11 +1849,7 @@ chn_resizebuf(struct pcm_channel *c, int latency, int blkcnt, int blksz)
 
 	if (!(c->direction == PCMDIR_PLAY || c->direction == PCMDIR_REC))
 		return EINVAL;
-<<<<<<< HEAD
-	if ((c->flags & (CHN_F_MMAP | CHN_F_TRIGGERED)) != 0)
-=======
 	if (!chn_may_resizebuf(c))
->>>>>>> rad/hardened/15-stable/main
 		return EINVAL;
 
 	if (latency == -1) {
@@ -1912,11 +1908,7 @@ chn_resizebuf(struct pcm_channel *c, int latency, int blkcnt, int blksz)
 		CHN_UNLOCK(c->parentchannel);
 		CHN_LOCK(c);
 		/* Revalidate. */
-<<<<<<< HEAD
-		if ((c->flags & (CHN_F_MMAP | CHN_F_TRIGGERED)) != 0)
-=======
 		if (!chn_may_resizebuf(c))
->>>>>>> rad/hardened/15-stable/main
 			return EINVAL;
 		if (c->direction == PCMDIR_PLAY) {
 			limit = (pb != NULL) ?
@@ -1984,11 +1976,7 @@ chn_resizebuf(struct pcm_channel *c, int latency, int blkcnt, int blksz)
 		}
 		CHN_LOCK(c);
 		/* Revalidate. */
-<<<<<<< HEAD
-		if ((c->flags & (CHN_F_MMAP | CHN_F_TRIGGERED)) != 0)
-=======
 		if (!chn_may_resizebuf(c))
->>>>>>> rad/hardened/15-stable/main
 			return EINVAL;
 
 		if (!CHN_EMPTY(c, children)) {
