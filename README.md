@@ -1,12 +1,12 @@
 | Branch | __FreeBSD_version | Last commit |
 |---|---:|---|
-| [freebsd/15-stable/main](../../tree/freebsd/15-stable/main) | 1502501 | 19.11.26 18:04 |
-| [freebsd/current/main](../../tree/freebsd/current/main) | 1600031 | 19.11.26 17:57 |
-| [hardened/15-stable/main](../../tree/hardened/15-stable/main) | 1502501 | 19.11.26 18:01 |
+| [freebsd/15-stable/main](../../tree/freebsd/15-stable/main) | 1502501 | 19.11.26 20:45 |
+| [freebsd/current/main](../../tree/freebsd/current/main) | 1600031 | 19.11.26 15:47 |
+| [hardened/15-stable/main](../../tree/hardened/15-stable/main) | 1502501 | 20.11.26 00:01 |
 | [hardened/15-stable/pledge](../../tree/hardened/15-stable/pledge) | 1501506 | 30.10.26 06:01 |
 | [hardened/current/cross-dso-cfi](../../tree/hardened/current/cross-dso-cfi) | 1600026 | 01.10.26 00:01 |
-| [hardened/current/master](../../tree/hardened/current/master) | 1600031 | 19.11.26 18:01 |
-| [hardened/current/pledge](../../tree/hardened/current/pledge) | 1600031 | 19.11.26 18:02 |
+| [hardened/current/master](../../tree/hardened/current/master) | 1600031 | 20.11.26 00:01 |
+| [hardened/current/pledge](../../tree/hardened/current/pledge) | 1600031 | 20.11.26 00:02 |
 | [hardened/hbsdfw/main](../../tree/hardened/hbsdfw/main) | 1600029 | 30.10.26 00:01 |
 | [quarterly/hardened/15-stable/main-2026q2](../../tree/quarterly/hardened/15-stable/main-2026q2) | 1500507 | 10.06.26 21:53 |
 | [quarterly/hardened/15-stable/main-2026q3](../../tree/quarterly/hardened/15-stable/main-2026q3) | 1501501 | 29.08.26 17:32 |
@@ -14,5 +14,5 @@
 | [quarterly/hardened/current/cross-dso-cfi-2026q3](../../tree/quarterly/hardened/current/cross-dso-cfi-2026q3) | 1600019 | 09.07.26 12:01 |
 | [quarterly/hardened/current/master-2026q2](../../tree/quarterly/hardened/current/master-2026q2) | 1600014 | 11.06.26 18:01 |
 | [quarterly/hardened/current/master-2026q3](../../tree/quarterly/hardened/current/master-2026q3) | 1600019 | 27.08.26 22:03 |
-| [quarterly/hardened/current/master-2026q4](../../tree/quarterly/hardened/current/master-2026q4) | 1600026 | 21.10.26 16:46 |
+| [quarterly/hardened/current/master-2026q4](../../tree/quarterly/hardened/current/master-2026q4) | 1600031 | 19.11.26 19:50 |
 | [quarterly/hardened/current/pledge-2026q3](../../tree/quarterly/hardened/current/pledge-2026q3) | 1600019 | 17.07.26 01:41 |
